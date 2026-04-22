@@ -68,10 +68,18 @@ Patient Message:
         raw_json = response.json()
         print("RAW GENAI RESPONSE:", json.dumps(raw_json, indent=2))
         if not isinstance(raw_json, dict):
-            return {"status": "InvalidAPIResponse", "error": "API returned non-dictionary JSON array or primitive."}
+            status_code = getattr(response, "status_code", "Unknown")
+            content_type = response.headers.get("Content-Type", "Unknown") if hasattr(response, "headers") else "Unknown"
+            type_name = type(raw_json).__name__
+            snippet = str(raw_json)[:500]
+            return {
+                "status": "InvalidAPIResponse", 
+                "error": f"API returned non-dictionary JSON array or primitive.\nType: {type_name}\nStatus: {status_code}\nContent-Type: {content_type}\nPreview: {snippet}"
+            }
     except Exception as e:
-        raw_text = response.text[:200] if hasattr(response, "text") else "Unknown"
-        return {"status": "InvalidAPIResponse", "error": f"API returned non-JSON body: {str(e)}\nRaw Response: {raw_text}"}
+        status_code = getattr(response, "status_code", "Unknown") if 'response' in locals() else "Unknown"
+        raw_text = response.text[:200] if 'response' in locals() and hasattr(response, "text") else "Unknown"
+        return {"status": "InvalidAPIResponse", "error": f"API returned non-JSON body: {str(e)}\nStatus: {status_code}\nRaw Response: {raw_text}"}
         
     try:
         choices = raw_json.get("choices", [])
