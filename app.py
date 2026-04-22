@@ -49,17 +49,26 @@ with st.sidebar:
     
     # Check secrets securely, prioritizing os.environ
     api_key = os.environ.get("PURDUE_GENAI_API_KEY")
-    if not api_key and hasattr(st, "secrets"):
-        api_key = st.secrets.get("PURDUE_GENAI_API_KEY")
-        
+    if not api_key:
+        try:
+            if hasattr(st, "secrets"):
+                api_key = st.secrets.get("PURDUE_GENAI_API_KEY")
+        except Exception:
+            api_key = None
+            
     if api_key:
         st.success("✅ **GenAI API Key:** Configured")
     else:
         st.error("❌ **GenAI API Key:** Missing")
         
     model_name = os.environ.get("PURDUE_GENAI_MODEL")
-    if not model_name and hasattr(st, "secrets"):
-        model_name = st.secrets.get("PURDUE_GENAI_MODEL")
+    if not model_name:
+        try:
+            if hasattr(st, "secrets"):
+                model_name = st.secrets.get("PURDUE_GENAI_MODEL")
+        except Exception:
+            model_name = None
+            
     if not model_name:
         model_name = "llama3.1:latest"
         

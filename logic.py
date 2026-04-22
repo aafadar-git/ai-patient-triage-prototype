@@ -67,16 +67,24 @@ Patient Message:
     try:
         raw_json = response.json()
         print("RAW GENAI RESPONSE:", json.dumps(raw_json, indent=2))
+        if not isinstance(raw_json, dict):
+            return {"status": "InvalidAPIResponse", "error": "API returned non-dictionary JSON array or primitive."}
     except Exception as e:
         raw_text = response.text[:200] if hasattr(response, "text") else "Unknown"
         return {"status": "InvalidAPIResponse", "error": f"API returned non-JSON body: {str(e)}\nRaw Response: {raw_text}"}
         
-    choices = raw_json.get("choices", [])
-    if not choices:
-        return {"status": "EmptyResponse", "error": f"Model returned no choices. Raw response: {raw_json}"}
-        
-    message_obj = choices[0].get("message", {})
-    out_text = message_obj.get("content", "")
+    try:
+        choices = raw_json.get("choices", [])
+        if not choices:
+            return {"status": "EmptyResponse", "error": f"Model returned no choices. Raw response: {raw_json}"}
+            
+        message_obj = choices[0].get("message", {})
+        if not isinstance(message_obj, dict):
+            return {"status": "InvalidAPIResponse", "error": "Message object is not a dictionary."}
+            
+        out_text = message_obj.get("content", "")
+    except (AttributeError, KeyError, IndexError, TypeError) as e:
+        return {"status": "InvalidAPIResponse", "error": f"Model JSON payload shape mismatch. Error: {str(e)}"}
     
     if not out_text or str(out_text).strip() == "":
          return {"status": "EmptyResponse", "error": f"Model returned empty message content. Raw response: {raw_json}"}
@@ -246,23 +254,33 @@ def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rul
         result["rationale"] = res_genai.get("rationale", "")
         genai_draft = res_genai.get("draft_response", "")
     else:
-        # 2 & 3. Classify and Route Steps (Rules Fallback)
-        if dataset_row is not None:
-            # Use existing mock knowledge for demo
-            result["urgency_label"] = dataset_row.get("urgency_label")
-            result["type_label"] = dataset_row.get("type_label")
-            result["route_label"] = dataset_row.get("route_label")
-            result["confidence"] = float(dataset_row.get("confidence", 0.0))
-            # Override escalation reason if data has one explicitly (for the edge case ones)
-            if pd.isna(escalation_reason) and pd.notna(dataset_row.get("escalation_reason")):
-                 escalation_reason = dataset_row["escalation_reason"]
-        else:
-            # Use stub classifier for custom input
+        # Fall back to rules classifier (stub_classifier), conservative rationale, empty draft
+        if inference_mode == "Purdue GenAI Assisted" and genai_status != "None":
             stub_res = stub_classifier(message)
             result["urgency_label"] = stub_res["urgency_label"]
             result["type_label"] = stub_res["type_label"]
             result["route_label"] = stub_res["route_label"]
             result["confidence"] = stub_res["confidence"]
+            result["rationale"] = "Fallback inference activated due to GenAI Studio failure."
+            genai_draft = ""
+        else:
+            # 2 & 3. Classify and Route Steps (Rules Fallback)
+            if dataset_row is not None:
+                # Use existing mock knowledge for demo
+                result["urgency_label"] = dataset_row.get("urgency_label")
+                result["type_label"] = dataset_row.get("type_label")
+                result["route_label"] = dataset_row.get("route_label")
+                result["confidence"] = float(dataset_row.get("confidence", 0.0))
+                # Override escalation reason if data has one explicitly (for the edge case ones)
+                if pd.isna(escalation_reason) and pd.notna(dataset_row.get("escalation_reason")):
+                     escalation_reason = dataset_row["escalation_reason"]
+            else:
+                # Use stub classifier for custom input
+                stub_res = stub_classifier(message)
+                result["urgency_label"] = stub_res["urgency_label"]
+                result["type_label"] = stub_res["type_label"]
+                result["route_label"] = stub_res["route_label"]
+                result["confidence"] = stub_res["confidence"]
 
     # Low confidence override rule
     CONFIDENCE_THRESHOLD = 0.80
@@ -327,10 +345,19 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
     urgent_true_positives = 0
     urgent_false_negatives = 0
     total_urgent_expected = 0
+    genai_fallbacks = 0
     total = len(df)
     
     for _, row in df.iterrows():
-        res_pred = process_message_pipeline(row['patient_message'], dataset_row=None, inference_mode=inference_mode)
+        try:
+            res_pred = process_message_pipeline(row['patient_message'], dataset_row=None, inference_mode=inference_mode)
+        except Exception as e:
+            # Safe catch to ensure one row failure does not crash offline evaluation
+            continue
+            
+        if inference_mode == "Purdue GenAI Assisted" and res_pred.get("genai_status") not in ["Success", "None"]:
+            genai_fallbacks += 1
+            
         if res_pred["urgency_label"] == row["urgency_label"]:
             urgency_matches += 1
         if res_pred["type_label"] == row["type_label"]:
@@ -358,6 +385,7 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
         "escalation_rate": escalations / total,
         "autodraft_rate": autodrafts / total,
         "urgent_recall": urgent_recall,
+        "genai_fallbacks": genai_fallbacks,
         "urgent_false_negatives": urgent_false_negatives,
         "total_urgent_expected": total_urgent_expected,
         "total_messages": total
