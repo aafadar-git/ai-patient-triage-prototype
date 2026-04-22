@@ -1,0 +1,21 @@
+message_id,patient_message,urgency_label,type_label,route_label,draft_response,confidence,escalation_reason
+MSG-001,"I need a refill on my lisinopril, out for 2 days now.",routine,medication,nurse pool,"Hello, your refill request for lisinopril has been sent to your pharmacy.",0.92,
+MSG-002,"I am experiencing crushing chest pain and shortness of breath.",emergency,symptom,physician,"",0.98,"Red flag: chest pain, shortness of breath"
+MSG-003,"Can I reschedule my appointment for next Tuesday?",routine,admin,front desk,"Hi, we have rescheduled your appointment to next Tuesday.",0.88,
+MSG-004,"I feel very dizzy and fainted this morning.",emergency,symptom,physician,"",0.89,"Red flag: fainting"
+MSG-005,"What time do you open on Fridays?",routine,admin,front desk,"We are open from 8 AM to 5 PM on Fridays.",0.95,
+MSG-006,"Since yesterday, I have numbness and one-sided weakness in my face.",emergency,symptom,physician,"",0.94,"Red flag: one-sided weakness"
+MSG-007,"My infant son has a high fever of 104 and won't stop crying.",emergency,symptom,physician,"",0.91,"Red flag: high fever in infant"
+MSG-008,"I took the new antibiotic and now I have a severe allergic reaction with hives.",emergency,symptom,physician,"",0.96,"Red flag: allergic reaction"
+MSG-009,"I'm feeling so overwhelmed and have suicidal thoughts.",emergency,symptom,physician,"",0.99,"Red flag: suicidal thoughts"
+MSG-010,"I cut my hand deeply while cooking and there is severe bleeding.",emergency,symptom,physician,"",0.95,"Red flag: severe bleeding"
+MSG-011,"Just checking in on my blood test results from last week.",routine,follow-up,nurse pool,"Your test results are normal, the doctor will review them with you soon.",0.85,
+MSG-012,"My throat is a bit sore today, should I take anything?",routine,symptom,nurse pool,"You can take over-the-counter lozenges. Keep hydrated.",0.80,
+MSG-013,"I have a dull headache that comes and goes.",routine,symptom,nurse pool,"Please rest and take ibuprofen as directed. If it worsens, let us know.",0.75,
+MSG-014,"Need to update my insurance information.",routine,admin,front desk,"Please bring your new insurance card to your next visit or upload it via the portal.",0.90,
+MSG-015,"I am having some mild stomach pain after eating.",urgent,symptom,nurse pool,"",0.65,"Low confidence score"
+MSG-016,"I think I might have an infection but I'm not sure. Also I need my records.",urgent,follow-up,nurse pool,"",0.60,"Low confidence score"
+MSG-017,"When is the doctor available for a telehealth visit?",routine,admin,front desk,"Telehealth slots are open Monday to Wednesday.",0.89,
+MSG-018,"Can you send the physical form to my child's school?",routine,admin,front desk,"We will fax the physical form to the school today.",0.92,
+MSG-019,"The rash on my arm is spreading and itching intensely.",urgent,symptom,physician,"",0.78,
+MSG-020,"I have been feeling really tired lately for the last week.",urgent,symptom,nurse pool,"",0.72,
