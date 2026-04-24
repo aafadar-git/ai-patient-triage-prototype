@@ -348,6 +348,62 @@ Rules:
         return {"status": "InvalidResponse", "error": f"Judge missing keys: {', '.join(missing)}"}
 
     return {"status": "Success", "data": parsed}
+
+def local_fallback_judge(message: str, candidate_output: dict) -> dict:
+    """
+    Deterministic judge fallback when remote judge API times out/unavailable.
+    Applies a few conservative consistency checks and returns judge-format output.
+    """
+    msg_l = (message or "").lower()
+    corrected = dict(candidate_output or {})
+    reasons = []
+    changed = False
+
+    acute_flags = [
+        "chest pain", "shortness of breath", "severe bleeding", "faint", "fainted",
+        "suicidal", "one-sided weakness", "allergic reaction", "high fever"
+    ]
+    wellness_flags = ["diet", "healthier", "nutrition", "exercise", "wellness", "prevention"]
+
+    has_acute = any(flag in msg_l for flag in acute_flags)
+    has_wellness = any(flag in msg_l for flag in wellness_flags)
+
+    urgency = str(corrected.get("urgency_label", "routine"))
+    conf = float(corrected.get("confidence", 0.5) or 0.5)
+
+    # Avoid over-escalation for lifestyle/wellness-only prompts.
+    if has_wellness and not has_acute and urgency in ["urgent", "emergency"]:
+        corrected["urgency_label"] = "routine"
+        corrected["type_label"] = corrected.get("type_label") if corrected.get("type_label") in ["admin", "follow-up"] else "follow-up"
+        corrected["route_label"] = "nurse pool"
+        corrected["confidence"] = min(conf, 0.75)
+        reasons.append("Downgraded wellness/lifestyle-only message from urgent/emergency to routine.")
+        changed = True
+
+    # Ensure emergency-leaning acute flags are not routine.
+    if has_acute and corrected.get("urgency_label") == "routine":
+        corrected["urgency_label"] = "urgent"
+        corrected["type_label"] = "symptom"
+        corrected["route_label"] = "physician"
+        corrected["confidence"] = max(float(corrected.get("confidence", 0.5) or 0.5), 0.8)
+        reasons.append("Escalated routine label due to acute symptom red flags.")
+        changed = True
+
+    # No drafts for non-routine labels.
+    if corrected.get("urgency_label") in ["urgent", "emergency"] and str(corrected.get("draft_response", "")).strip():
+        corrected["draft_response"] = ""
+        reasons.append("Removed draft response for non-routine triage.")
+        changed = True
+
+    return {
+        "verdict": "fail" if changed else "pass",
+        "corrected_urgency_label": corrected.get("urgency_label", "routine"),
+        "corrected_type_label": corrected.get("type_label", "follow-up"),
+        "corrected_route_label": corrected.get("route_label", "nurse pool"),
+        "corrected_confidence": float(corrected.get("confidence", 0.5) or 0.5),
+        "corrected_draft_response": str(corrected.get("draft_response", "") or ""),
+        "judge_rationale": " | ".join(reasons) if reasons else "Local fallback judge found no consistency issues."
+    }
 RED_FLAGS = [
     "chest pain",
     "shortness of breath",
@@ -518,6 +574,33 @@ def process_message_pipeline(
                     result["judge_applied"] = True
             else:
                 result["judge_rationale"] = judge_res.get("error", "Judge call failed.")
+                # Fallback: run deterministic local judge so validation still happens.
+                fallback_data = local_fallback_judge(
+                    message=message,
+                    candidate_output={
+                        "urgency_label": result["urgency_label"],
+                        "type_label": result["type_label"],
+                        "route_label": result["route_label"],
+                        "confidence": result["confidence"],
+                        "draft_response": genai_draft
+                    }
+                )
+                result["judge_status"] = f"{result['judge_status']} (fallback-local)"
+                result["judge_verdict"] = fallback_data.get("verdict")
+                result["judge_rationale"] = (
+                    f"{result.get('judge_rationale', '')} "
+                    f"Using local fallback judge: {fallback_data.get('judge_rationale', '')}"
+                ).strip()
+                if fallback_data.get("verdict") == "fail":
+                    result["urgency_label"] = fallback_data.get("corrected_urgency_label", result["urgency_label"])
+                    result["type_label"] = fallback_data.get("corrected_type_label", result["type_label"])
+                    result["route_label"] = fallback_data.get("corrected_route_label", result["route_label"])
+                    try:
+                        result["confidence"] = float(fallback_data.get("corrected_confidence", result["confidence"]))
+                    except Exception:
+                        pass
+                    genai_draft = str(fallback_data.get("corrected_draft_response", genai_draft))
+                    result["judge_applied"] = True
     else:
         # Fall back to rules classifier (stub_classifier), conservative rationale, empty draft
         if inference_mode == "Purdue GenAI Assisted" and genai_status != "None":
