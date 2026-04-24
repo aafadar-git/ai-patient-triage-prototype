@@ -26,35 +26,101 @@ def call_purdue_genai(
     }
     
     prompt = f"""
-Analyze the following patient portal message for triage.
-First, assess whether the message is a valid, serious healthcare portal request. 
-If the message is nonsensical, joking, non-medical, clearly invalid, or requests something inappropriate/non-clinical (e.g., "refill my diet coke"):
-- Keep the triage classification conservative.
-- Lower the confidence score appropriately (<0.5).
-- Return "draft_response" as an empty string.
-- Explain the invalidity strictly in the "rationale".
+You are a patient portal triage assistant. Classify ONE incoming patient message conservatively and consistently.
 
-Return ONLY valid JSON with exactly these keys. All keys are mandatory. Do not omit any key. Return exactly one JSON object with no prose before or after the JSON. If uncertain about a classification, choose the closest valid label:
-"urgency_label": (one of "emergency", "urgent", "routine")
-"type_label": (one of "symptom", "medication", "admin", "follow-up")
-"route_label": (one of "nurse pool", "physician", "front desk")
-"confidence": (a float between 0.0 and 1.0)
-"draft_response": (a patient-facing draft response if a valid routine clinical request, otherwise empty string)
-"rationale": (a string explaining the reasoning)
+Core triage policy:
+1) emergency = immediate danger / severe acute symptoms needing immediate clinician escalation.
+2) urgent = time-sensitive clinical concern, but not clearly life-threatening.
+3) routine = non-acute questions, chronic care management, prevention/wellness, scheduling/admin, general guidance.
 
-Draft Response Rules for Valid Routine Messages:
-- Assess the FULL context of the message—do not keyword-match a single term like "refill".
-- If a refill request does not mention a plausible medication or sounds unserious/invalid, do NOT produce a normal refill response.
-- Must be a realistic, patient-facing reply.
-- 2-4 sentences maximum.
-- Professional and empathetic tone.
-- NO diagnosis.
-- NO unsafe medical advice.
-- Do NOT mention "AI-generated" or refer to an AI inside this text.
-- If it is a valid refill/admin/follow-up request, acknowledge receipt and describe the next step appropriately.
-- If the content is ambiguous, keep the message conservative and advise clinic follow-up.
+Important anti-over-escalation rule:
+- Do NOT label lifestyle, wellness, diet, exercise, prevention, or general education questions as urgent/emergency unless there are clear acute red-flag symptoms.
+- Example: "How can I have a healthier diet?" should be routine.
 
-Patient Message:
+Invalid/non-clinical handling:
+If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke"):
+- Keep classification conservative.
+- Lower confidence (<0.5).
+- Return empty draft_response.
+- Explain why in rationale.
+
+Output requirements:
+Return ONLY valid JSON with exactly these keys (all mandatory), and no prose before/after:
+"urgency_label": one of ["emergency", "urgent", "routine"]
+"type_label": one of ["symptom", "medication", "admin", "follow-up"]
+"route_label": one of ["nurse pool", "physician", "front desk"]
+"confidence": float in [0.0, 1.0]
+"draft_response": patient-facing draft only for valid routine clinical requests, else empty string
+"rationale": concise explanation of why labels were chosen
+
+Draft response rules (only when routine and valid):
+- 2-4 sentences, empathetic and professional.
+- No diagnosis, no unsafe advice, no mention of AI.
+- If ambiguous, use conservative language and advise clinic follow-up.
+
+Few-shot examples (guidance only; do not copy text literally):
+
+Example A (routine wellness edge case):
+Input: "How can I have a healthier diet? I want to improve my eating habits."
+Output:
+{{
+  "urgency_label": "routine",
+  "type_label": "follow-up",
+  "route_label": "nurse pool",
+  "confidence": 0.90,
+  "draft_response": "Thanks for reaching out about improving your diet. We can share general nutrition guidance and help you set practical goals based on your health history. If you would like, we can also schedule a routine follow-up to discuss a personalized plan.",
+  "rationale": "General wellness/preventive question without acute symptoms, so routine triage is appropriate."
+}}
+
+Example B (urgent symptom):
+Input: "I have a high fever and rash that is getting worse since yesterday."
+Output:
+{{
+  "urgency_label": "urgent",
+  "type_label": "symptom",
+  "route_label": "physician",
+  "confidence": 0.88,
+  "draft_response": "",
+  "rationale": "Worsening acute symptoms are time-sensitive and should be escalated for clinician review."
+}}
+
+Example C (emergency symptom):
+Input: "I have chest pain and shortness of breath right now."
+Output:
+{{
+  "urgency_label": "emergency",
+  "type_label": "symptom",
+  "route_label": "physician",
+  "confidence": 0.97,
+  "draft_response": "",
+  "rationale": "Potential life-threatening red-flag symptoms require immediate escalation."
+}}
+
+Example D (routine medication):
+Input: "Can I get a refill on my lisinopril? I have 3 pills left."
+Output:
+{{
+  "urgency_label": "routine",
+  "type_label": "medication",
+  "route_label": "nurse pool",
+  "confidence": 0.93,
+  "draft_response": "Thanks for your refill request. We have sent this to the care team for review and processing. Please continue taking your medication as previously directed, and let us know if you have any new symptoms.",
+  "rationale": "Valid medication refill request without urgent symptoms; routine medication workflow."
+}}
+
+Example E (invalid/non-clinical edge case):
+Input: "Please refill my diet coke prescription lol."
+Output:
+{{
+  "urgency_label": "routine",
+  "type_label": "admin",
+  "route_label": "front desk",
+  "confidence": 0.25,
+  "draft_response": "",
+  "rationale": "Message appears non-clinical/joking and is not a valid healthcare request."
+}}
+
+Now classify this patient message:
 {message}
 """
     try:
