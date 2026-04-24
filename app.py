@@ -144,9 +144,22 @@ with col2:
             with st.expander("Show Diagnostic Error", expanded=True):
                 st.error(f"**Status Code:** {result.get('genai_status')}\n\n**Details:** {result.get('genai_error')}")
 
-        if inference_mode == "Purdue GenAI Assisted":
-            with st.expander("AI Rationale", expanded=True):
-                st.write(result.get("rationale") or "No rationale was returned.")
+        rationale_text = str(result.get("rationale") or "").strip()
+        if not rationale_text:
+            if inference_mode == "Rules Only":
+                rationale_text = (
+                    "Rules-only mode is active. This output comes from deterministic rules/stub logic, "
+                    "not a model-generated rationale."
+                )
+            elif result.get("genai_status") == "Success":
+                rationale_text = "Model call succeeded but returned no rationale text."
+            else:
+                rationale_text = (
+                    f"No model rationale available. GenAI status: {result.get('genai_status', 'Unknown')}."
+                )
+
+        with st.expander("AI Rationale", expanded=True):
+            st.write(rationale_text)
             
         st.divider()
         
