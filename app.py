@@ -38,6 +38,14 @@ st.title("Patient Portal Message Triage")
 # Layout
 with st.sidebar:
     inference_mode = st.radio("Inference Mode", ["Rules Only", "Purdue GenAI Assisted"])
+    genai_temperature = st.slider(
+        "GenAI Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.05,
+        help="Higher values increase response variability. Use this to validate confidence and prompt behavior."
+    )
     st.divider()
     with st.expander("About this prototype", expanded=True):
         st.write("**The Problem:** Inbox overload leads to clinician burnout and risks missing urgent medical issues.")
@@ -109,7 +117,12 @@ with col2:
     st.subheader("2. AI Analysis & Triage")
     if selected_message.strip():
         # RUN AI PIPELINE
-        result = logic.process_message_pipeline(selected_message, dataset_row=dataset_row, inference_mode=inference_mode)
+        result = logic.process_message_pipeline(
+            selected_message,
+            dataset_row=dataset_row,
+            inference_mode=inference_mode,
+            genai_temperature=genai_temperature
+        )
         
         # Display Badges
         c1, c2, c3 = st.columns(3)
@@ -123,8 +136,11 @@ with col2:
         
         if result.get("genai_status") == "Success":
             st.caption("🤖 Model-assisted output via Purdue GenAI Studio")
+            st.caption(f"Temperature Used: `{result.get('genai_temperature', 0.0):.2f}`")
             with st.expander("AI Rationale", expanded=True):
                 st.write(result.get("rationale") or "No rationale was returned by the model.")
+            with st.expander("Prompt Used for GenAI", expanded=False):
+                st.code(result.get("genai_prompt") or "Prompt not available.", language="text")
         elif inference_mode == "Purdue GenAI Assisted" and result.get("genai_status") not in ["Success", "None"]:
             st.warning("⚠️ **Purdue GenAI unavailable or failed; reverted to rules-only inference.**")
             with st.expander("Show Diagnostic Error", expanded=True):
@@ -196,7 +212,11 @@ with tab_queue:
         admin_queue = []
         
         for _, r in df_mock.iterrows():
-            r_eval = logic.process_message_pipeline(r['patient_message'], dataset_row=r.to_dict())
+            r_eval = logic.process_message_pipeline(
+                r['patient_message'],
+                dataset_row=r.to_dict(),
+                genai_temperature=genai_temperature
+            )
             item = {
                 "Message ID": r['message_id'],
                 "Patient Message": r['patient_message'],
@@ -244,14 +264,22 @@ with tab2:
         
         for _, row in df_mock.iterrows():
             # Pipeline with dataset for demo tracking
-            res = logic.process_message_pipeline(row['patient_message'], dataset_row=row.to_dict())
+            res = logic.process_message_pipeline(
+                row['patient_message'],
+                dataset_row=row.to_dict(),
+                genai_temperature=genai_temperature
+            )
             if res.get("escalation_reason"):
                 escalate_count += 1
             elif res.get("urgency_label") == "routine" and res.get("confidence") >= 0.80:
                 routine_draft_count += 1
             
             # Pure inference without dataset hints to test rule accuracy
-            res_pred = logic.process_message_pipeline(row['patient_message'], dataset_row=None)
+            res_pred = logic.process_message_pipeline(
+                row['patient_message'],
+                dataset_row=None,
+                genai_temperature=genai_temperature
+            )
             if res_pred["urgency_label"] == row["urgency_label"]:
                 urgency_matches += 1
             if res_pred["type_label"] == row["type_label"]:

@@ -5,7 +5,7 @@ import os
 import json
 import requests
 
-def call_purdue_genai(message: str):
+def call_purdue_genai(message: str, temperature: float = 0.0):
     api_key = os.environ.get("PURDUE_GENAI_API_KEY")
     if not api_key:
         return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
@@ -53,7 +53,7 @@ Patient Message:
         data = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0
+            "temperature": float(temperature)
         }
     except Exception as e:
         return {"status": "APIError", "error": f"Failed building API configuration: {str(e)}"}
@@ -143,7 +143,9 @@ Patient Message:
             "route_label": parsed["route_label"],
             "confidence": float(parsed["confidence"]),
             "draft_response": parsed["draft_response"],
-            "rationale": parsed["rationale"]
+            "rationale": parsed["rationale"],
+            "prompt": prompt.strip(),
+            "temperature": float(temperature)
         }
     }
 RED_FLAGS = [
@@ -228,7 +230,7 @@ def stub_classifier(message: str):
         "confidence": confidence
     }
 
-def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rules Only"):
+def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rules Only", genai_temperature: float = 0.0):
     """
     Orchestrates the AI classification pipeline.
     If testing with the mock dataset, it uses the dataset values.
@@ -242,9 +244,11 @@ def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rul
     genai_status = "None"
     res_genai = None
     genai_draft = ""
+    result["genai_prompt"] = None
+    result["genai_temperature"] = None
 
     if inference_mode == "Purdue GenAI Assisted" and not escalation_reason:
-        try_res = call_purdue_genai(message)
+        try_res = call_purdue_genai(message, temperature=genai_temperature)
         if try_res["status"] == "Success":
             res_genai = try_res["data"]
             genai_status = "Success"
@@ -261,6 +265,8 @@ def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rul
         result["confidence"] = res_genai["confidence"]
         result["rationale"] = res_genai.get("rationale", "")
         genai_draft = res_genai.get("draft_response", "")
+        result["genai_prompt"] = res_genai.get("prompt")
+        result["genai_temperature"] = res_genai.get("temperature")
     else:
         # Fall back to rules classifier (stub_classifier), conservative rationale, empty draft
         if inference_mode == "Purdue GenAI Assisted" and genai_status != "None":
