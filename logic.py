@@ -4,8 +4,16 @@ import re
 import os
 import json
 import requests
+import time
 
-def call_purdue_genai(message: str, temperature: float = 0.0, api_key: str | None = None, model_name: str | None = None):
+def call_purdue_genai(
+    message: str,
+    temperature: float = 0.0,
+    api_key: str | None = None,
+    model_name: str | None = None,
+    request_timeout_seconds: int = 30,
+    max_retries: int = 2
+):
     if not api_key:
         api_key = os.environ.get("PURDUE_GENAI_API_KEY")
     if not api_key:
@@ -60,11 +68,28 @@ Patient Message:
     except Exception as e:
         return {"status": "APIError", "error": f"Failed building API configuration: {str(e)}"}
     
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        return {"status": "APIError", "error": f"Network or HTTP error: {str(e)}"}
+    response = None
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=request_timeout_seconds)
+            response.raise_for_status()
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            # brief exponential backoff between retries
+            if attempt < max_retries:
+                time.sleep(1.5 * (2 ** attempt))
+
+    if last_error is not None:
+        return {
+            "status": "APIError",
+            "error": (
+                f"Network or HTTP error after {max_retries + 1} attempt(s): {str(last_error)} "
+                f"(timeout={request_timeout_seconds}s)"
+            )
+        }
         
     try:
         raw_json = response.json()
