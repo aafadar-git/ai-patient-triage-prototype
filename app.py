@@ -137,14 +137,16 @@ with col2:
         if result.get("genai_status") == "Success":
             st.caption("🤖 Model-assisted output via Purdue GenAI Studio")
             st.caption(f"Temperature Used: `{result.get('genai_temperature', 0.0):.2f}`")
-            with st.expander("AI Rationale", expanded=True):
-                st.write(result.get("rationale") or "No rationale was returned by the model.")
             with st.expander("Prompt Used for GenAI", expanded=False):
                 st.code(result.get("genai_prompt") or "Prompt not available.", language="text")
         elif inference_mode == "Purdue GenAI Assisted" and result.get("genai_status") not in ["Success", "None"]:
             st.warning("⚠️ **Purdue GenAI unavailable or failed; reverted to rules-only inference.**")
             with st.expander("Show Diagnostic Error", expanded=True):
                 st.error(f"**Status Code:** {result.get('genai_status')}\n\n**Details:** {result.get('genai_error')}")
+
+        if inference_mode == "Purdue GenAI Assisted":
+            with st.expander("AI Rationale", expanded=True):
+                st.write(result.get("rationale") or "No rationale was returned.")
             
         st.divider()
         

@@ -296,6 +296,15 @@ def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rul
                 result["route_label"] = stub_res["route_label"]
                 result["confidence"] = stub_res["confidence"]
 
+    # Always return a rationale string for UI consistency.
+    if not str(result.get("rationale", "")).strip():
+        if inference_mode == "Purdue GenAI Assisted" and escalation_reason:
+            result["rationale"] = "GenAI call skipped because message matched safety escalation rules."
+        elif inference_mode == "Purdue GenAI Assisted" and genai_status == "None":
+            result["rationale"] = "GenAI was not invoked for this request."
+        else:
+            result["rationale"] = "Rationale not available for this inference path."
+
     # Low confidence override rule
     CONFIDENCE_THRESHOLD = 0.80
     if result["confidence"] < CONFIDENCE_THRESHOLD:
