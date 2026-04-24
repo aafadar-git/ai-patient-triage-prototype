@@ -11,8 +11,8 @@ def call_purdue_genai(
     temperature: float = 0.0,
     api_key: str | None = None,
     model_name: str | None = None,
-    request_timeout_seconds: int = 30,
-    max_retries: int = 2
+    request_timeout_seconds: int = 60,
+    max_retries: int = 3
 ):
     if not api_key:
         api_key = os.environ.get("PURDUE_GENAI_API_KEY")
@@ -247,8 +247,8 @@ def call_purdue_genai_judge(
     candidate_output: dict,
     api_key: str | None = None,
     model_name: str | None = None,
-    request_timeout_seconds: int = 30,
-    max_retries: int = 1
+    request_timeout_seconds: int = 20,
+    max_retries: int = 0
 ):
     """
     Secondary LLM judge pass to validate (and optionally correct) candidate triage output.
