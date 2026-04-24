@@ -168,13 +168,17 @@ with col2:
         # Escalation / Drafting Panel
         if result.get("escalation_reason"):
             st.error(f"🚨 **ESCALATE TO CLINICIAN IMMEDIATELY**\n\n**Reason:** {result['escalation_reason']}")
+            st.info("ℹ️ Auto-draft is disabled for escalated or non-routine messages.")
             draft = None
         else:
             st.success("✅ **Cleared for Auto-Drafting** (Routine issue, High Confidence)")
             if result.get("draft_response"):
                 draft = st.text_area("Generated Draft Response", value=result["draft_response"], height=120)
             else:
-                st.info("ℹ️ No auto-draft text was generated for this message.")
+                st.info(
+                    "ℹ️ No auto-draft text was generated. Drafts are only produced for routine, "
+                    "non-escalated, high-confidence messages."
+                )
                 draft = None
         
         st.divider()

@@ -336,8 +336,16 @@ def process_message_pipeline(
                 result["confidence"] = stub_res["confidence"]
 
     # Always return a rationale string for UI consistency.
-    if not str(result.get("rationale", "")).strip():
-        if inference_mode == "Purdue GenAI Assisted" and escalation_reason:
+    rationale_raw = str(result.get("rationale", "")).strip()
+    if (not rationale_raw) or rationale_raw.lower() == "no rationale was returned by the model.":
+        if genai_status == "Success":
+            result["rationale"] = (
+                f"Model output summary: urgency={result.get('urgency_label')}, "
+                f"type={result.get('type_label')}, route={result.get('route_label')}, "
+                f"confidence={result.get('confidence', 0):.2f}. "
+                "The model did not provide a detailed rationale string."
+            )
+        elif inference_mode == "Purdue GenAI Assisted" and escalation_reason:
             result["rationale"] = "GenAI call skipped because message matched safety escalation rules."
         elif inference_mode == "Purdue GenAI Assisted" and genai_status == "None":
             result["rationale"] = "GenAI was not invoked for this request."
