@@ -5,8 +5,9 @@ import os
 import json
 import requests
 
-def call_purdue_genai(message: str, temperature: float = 0.0):
-    api_key = os.environ.get("PURDUE_GENAI_API_KEY")
+def call_purdue_genai(message: str, temperature: float = 0.0, api_key: str | None = None, model_name: str | None = None):
+    if not api_key:
+        api_key = os.environ.get("PURDUE_GENAI_API_KEY")
     if not api_key:
         return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
         
@@ -49,7 +50,8 @@ Patient Message:
 {message}
 """
     try:
-        model_name = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
+        if not model_name:
+            model_name = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
         data = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
@@ -230,7 +232,14 @@ def stub_classifier(message: str):
         "confidence": confidence
     }
 
-def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rules Only", genai_temperature: float = 0.0):
+def process_message_pipeline(
+    message: str,
+    dataset_row=None,
+    inference_mode="Rules Only",
+    genai_temperature: float = 0.0,
+    genai_api_key: str | None = None,
+    genai_model_name: str | None = None
+):
     """
     Orchestrates the AI classification pipeline.
     If testing with the mock dataset, it uses the dataset values.
@@ -248,7 +257,12 @@ def process_message_pipeline(message: str, dataset_row=None, inference_mode="Rul
     result["genai_temperature"] = None
 
     if inference_mode == "Purdue GenAI Assisted" and not escalation_reason:
-        try_res = call_purdue_genai(message, temperature=genai_temperature)
+        try_res = call_purdue_genai(
+            message,
+            temperature=genai_temperature,
+            api_key=genai_api_key,
+            model_name=genai_model_name
+        )
         if try_res["status"] == "Success":
             res_genai = try_res["data"]
             genai_status = "Success"

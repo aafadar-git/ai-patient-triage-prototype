@@ -121,7 +121,9 @@ with col2:
             selected_message,
             dataset_row=dataset_row,
             inference_mode=inference_mode,
-            genai_temperature=genai_temperature
+            genai_temperature=genai_temperature,
+            genai_api_key=api_key,
+            genai_model_name=model_name
         )
         
         # Display Badges
