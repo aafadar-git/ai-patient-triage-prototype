@@ -241,6 +241,113 @@ Now classify this patient message:
             "temperature": float(temperature)
         }
     }
+
+def call_purdue_genai_judge(
+    message: str,
+    candidate_output: dict,
+    api_key: str | None = None,
+    model_name: str | None = None,
+    request_timeout_seconds: int = 30,
+    max_retries: int = 1
+):
+    """
+    Secondary LLM judge pass to validate (and optionally correct) candidate triage output.
+    """
+    if not api_key:
+        api_key = os.environ.get("PURDUE_GENAI_API_KEY")
+    if not api_key:
+        return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
+
+    if not model_name:
+        model_name = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
+
+    url = "https://genai.rcac.purdue.edu/api/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    judge_prompt = f"""
+You are an independent clinical triage QA judge.
+Review the candidate output for consistency, safety, confidence calibration, and response quality.
+
+Patient message:
+{message}
+
+Candidate output JSON:
+{json.dumps(candidate_output)}
+
+Return ONLY one valid JSON object (no prose) with these keys:
+- verdict: "pass" or "fail"
+- corrected_urgency_label: one of ["emergency", "urgent", "routine"]
+- corrected_type_label: one of ["symptom", "medication", "admin", "follow-up"]
+- corrected_route_label: one of ["nurse pool", "physician", "front desk"]
+- corrected_confidence: float in [0.0, 1.0]
+- corrected_draft_response: string (empty if non-routine/high-risk)
+- judge_rationale: concise explanation of validation/corrections
+
+Rules:
+- Do not over-escalate lifestyle/wellness/diet/prevention-only questions.
+- Red-flag symptoms should not be routine.
+- confidence should reflect certainty; lower it when ambiguous.
+- Draft responses should exist only for routine, non-escalated situations.
+"""
+
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": judge_prompt}],
+        "temperature": 0.0
+    }
+
+    response = None
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=request_timeout_seconds)
+            response.raise_for_status()
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(1.0 * (2 ** attempt))
+
+    if last_error is not None:
+        return {
+            "status": "APIError",
+            "error": f"Judge network/HTTP error after {max_retries + 1} attempt(s): {str(last_error)}"
+        }
+
+    try:
+        raw_json = response.json()
+        choices = raw_json.get("choices", [])
+        if not choices:
+            return {"status": "EmptyResponse", "error": "Judge returned no choices."}
+        out_text = choices[0].get("message", {}).get("content", "").strip()
+        if not out_text:
+            return {"status": "EmptyResponse", "error": "Judge returned empty content."}
+        if "```json" in out_text:
+            out_text = out_text.split("```json")[1].split("```")[0]
+        elif "```" in out_text:
+            out_text = out_text.split("```")[1].split("```")[0]
+        parsed = json.loads(out_text.strip())
+    except Exception as e:
+        return {"status": "ParseError", "error": f"Judge parse error: {str(e)}"}
+
+    required = [
+        "verdict",
+        "corrected_urgency_label",
+        "corrected_type_label",
+        "corrected_route_label",
+        "corrected_confidence",
+        "corrected_draft_response",
+        "judge_rationale"
+    ]
+    missing = [k for k in required if k not in parsed]
+    if missing:
+        return {"status": "InvalidResponse", "error": f"Judge missing keys: {', '.join(missing)}"}
+
+    return {"status": "Success", "data": parsed}
 RED_FLAGS = [
     "chest pain",
     "shortness of breath",
@@ -329,7 +436,8 @@ def process_message_pipeline(
     inference_mode="Rules Only",
     genai_temperature: float = 0.0,
     genai_api_key: str | None = None,
-    genai_model_name: str | None = None
+    genai_model_name: str | None = None,
+    use_llm_judge: bool = True
 ):
     """
     Orchestrates the AI classification pipeline.
@@ -346,6 +454,10 @@ def process_message_pipeline(
     genai_draft = ""
     result["genai_prompt"] = None
     result["genai_temperature"] = None
+    result["judge_status"] = "None"
+    result["judge_verdict"] = None
+    result["judge_rationale"] = None
+    result["judge_applied"] = False
 
     if inference_mode == "Purdue GenAI Assisted" and not escalation_reason:
         try_res = call_purdue_genai(
@@ -372,6 +484,40 @@ def process_message_pipeline(
         genai_draft = res_genai.get("draft_response", "")
         result["genai_prompt"] = res_genai.get("prompt")
         result["genai_temperature"] = res_genai.get("temperature")
+
+        if use_llm_judge:
+            judge_res = call_purdue_genai_judge(
+                message=message,
+                candidate_output={
+                    "urgency_label": result["urgency_label"],
+                    "type_label": result["type_label"],
+                    "route_label": result["route_label"],
+                    "confidence": result["confidence"],
+                    "draft_response": genai_draft,
+                    "rationale": result.get("rationale", "")
+                },
+                api_key=genai_api_key,
+                model_name=genai_model_name
+            )
+            result["judge_status"] = judge_res.get("status", "Unknown")
+
+            if judge_res.get("status") == "Success":
+                judge_data = judge_res.get("data", {})
+                verdict = str(judge_data.get("verdict", "")).strip().lower()
+                result["judge_verdict"] = verdict
+                result["judge_rationale"] = judge_data.get("judge_rationale", "")
+                if verdict == "fail":
+                    result["urgency_label"] = judge_data.get("corrected_urgency_label", result["urgency_label"])
+                    result["type_label"] = judge_data.get("corrected_type_label", result["type_label"])
+                    result["route_label"] = judge_data.get("corrected_route_label", result["route_label"])
+                    try:
+                        result["confidence"] = float(judge_data.get("corrected_confidence", result["confidence"]))
+                    except Exception:
+                        pass
+                    genai_draft = str(judge_data.get("corrected_draft_response", genai_draft))
+                    result["judge_applied"] = True
+            else:
+                result["judge_rationale"] = judge_res.get("error", "Judge call failed.")
     else:
         # Fall back to rules classifier (stub_classifier), conservative rationale, empty draft
         if inference_mode == "Purdue GenAI Assisted" and genai_status != "None":

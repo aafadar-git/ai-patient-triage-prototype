@@ -38,6 +38,11 @@ st.title("Patient Portal Message Triage")
 # Layout
 with st.sidebar:
     inference_mode = st.radio("Inference Mode", ["Rules Only", "Purdue GenAI Assisted"])
+    use_llm_judge = st.checkbox(
+        "Enable LLM Judge Validation",
+        value=True,
+        help="Runs a second LLM pass to validate/correct classification, confidence, and draft response."
+    )
     genai_temperature = st.slider(
         "GenAI Temperature",
         min_value=0.0,
@@ -123,7 +128,8 @@ with col2:
             inference_mode=inference_mode,
             genai_temperature=genai_temperature,
             genai_api_key=api_key,
-            genai_model_name=model_name
+            genai_model_name=model_name,
+            use_llm_judge=use_llm_judge
         )
         
         # Display Badges
@@ -162,6 +168,13 @@ with col2:
 
         with st.expander("AI Rationale", expanded=True):
             st.write(rationale_text)
+
+        if inference_mode == "Purdue GenAI Assisted" and use_llm_judge:
+            with st.expander("LLM Judge Validation", expanded=False):
+                st.write(f"**Judge Status:** {result.get('judge_status', 'None')}")
+                st.write(f"**Judge Verdict:** {result.get('judge_verdict') or 'N/A'}")
+                st.write(f"**Judge Applied Corrections:** {result.get('judge_applied', False)}")
+                st.write(result.get("judge_rationale") or "No judge rationale available.")
             
         st.divider()
         
