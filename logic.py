@@ -182,8 +182,18 @@ Now classify this patient message:
         }
         
     try:
+        # Log the raw response for debugging (gated by env var to prevent log spam)
+        if os.environ.get("DEBUG_PURDUE_GENAI", "false").lower() == "true":
+            print(f"[DEBUG] RAW GENAI RESPONSE (Status {response.status_code}):")
+            print(f"[DEBUG] Headers: {response.headers}")
+            print(f"[DEBUG] Body: {response.text}")
+
         raw_json = response.json()
-        print("RAW GENAI RESPONSE:", json.dumps(raw_json, indent=2))
+        
+        # Normalize list responses
+        if isinstance(raw_json, list):
+            raw_json = {"choices": raw_json}
+
         if not isinstance(raw_json, dict):
             status_code = getattr(response, "status_code", "Unknown")
             content_type = response.headers.get("Content-Type", "Unknown") if hasattr(response, "headers") else "Unknown"
