@@ -317,6 +317,20 @@ def test_literal_cant_breathe_with_symptoms_escalated():
     assert result["urgency_label"] in ("urgent", "emergency")
     assert "breathe" in (result.get("escalation_reason") or "").lower()
 
+def test_c11_genai_figurative_normalization():
+    """Assert that a model-returned emergency for figurative language is downgraded."""
+    result = process_message_pipeline(
+        "I can't breathe without you near me lol",
+        dataset_row={"urgency_label": "emergency", "type_label": "symptom", "route_label": "physician", "confidence": 0.95},
+        inference_mode="Rules Only" 
+    )
+    
+    assert result["urgency_label"] == "routine"
+    assert result["confidence"] < 0.50
+    assert result["manual_review_required"] is True
+    assert result["requires_clinician_review"] is False
+    assert "SYSTEM NORMALIZED" in result["rationale"]
+
 # ==========================================
 # TEST GROUP D: call_purdue_genai edge cases
 # ==========================================
