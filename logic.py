@@ -439,6 +439,26 @@ RED_FLAGS = [
     "end it all"
 ]
 
+def is_obvious_nonclinical_figurative(message: str) -> bool:
+    """
+    Helper to detect clearly figurative/romantic/jokey language that might 
+    cause false positive escalations in rule-based checks.
+    """
+    msg_l = message.lower().strip()
+    
+    strong_figurative = [
+        "take my breath away", "dying laughing", "killing me", 
+        "dying 💀", "dead 💀", "diet coke", "can't breathe laughing", 
+        "lol", "lmao", "joke", "laughing", "dying from laughter"
+    ]
+    if any(phrase in msg_l for phrase in strong_figurative):
+        return True
+        
+    if "without you" in msg_l and ("breathe" in msg_l or "breath" in msg_l):
+        return True
+        
+    return False
+
 def safety_check(message: str) -> str | None:
     """
     Checks a message for red-flag phrases. 
@@ -446,8 +466,14 @@ def safety_check(message: str) -> str | None:
     """
     message_lower = message.lower()
     flags_found = []
+    
+    figurative = is_obvious_nonclinical_figurative(message)
+    respiratory_flags = ["shortness of breath", "hard to breathe", "can't catch my breath", "can't breathe", "trouble breathing"]
+    
     for flag in RED_FLAGS:
         if re.search(r'\b' + re.escape(flag) + r'\b', message_lower):
+            if figurative and flag in respiratory_flags:
+                continue
             flags_found.append(flag)
 
     if flags_found:
@@ -462,12 +488,7 @@ def stub_classifier(message: str):
     msg_l = message.lower()
 
     # Pre-check for figurative or clearly non-clinical
-    figurative_phrases = [
-        "dying from laughter", "dying 💀", "dead 💀", "diet coke", 
-        "can't breathe laughing", "lol", "lmao", "joke",
-        "killing me", "laughing"
-    ]
-    if any(phrase in msg_l for phrase in figurative_phrases):
+    if is_obvious_nonclinical_figurative(message):
         return {
             "urgency_label": "routine",
             "type_label": "admin",
