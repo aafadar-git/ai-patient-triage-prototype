@@ -39,6 +39,7 @@ Important anti-over-escalation rule:
 
 Invalid/non-clinical handling:
 If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke", "I'm dying 💀", "I'm dead 💀", "dying from laughter", "this is killing me lol"):
+If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke"):
 - Keep classification conservative.
 - Lower confidence (<0.5).
 - Return empty draft_response.
@@ -133,7 +134,7 @@ Now classify this patient message:
         }
     except Exception as e:
         return {"status": "APIError", "error": f"Failed building API configuration: {str(e)}"}
-
+    
     response = None
     last_error = None
     for attempt in range(max_retries + 1):
@@ -156,7 +157,7 @@ Now classify this patient message:
                 f"(timeout={request_timeout_seconds}s)"
             )
         }
-
+        
     try:
         raw_json = response.json()
         print("RAW GENAI RESPONSE:", json.dumps(raw_json, indent=2))
@@ -597,7 +598,6 @@ def process_message_pipeline(
             if judge_res.get("status") == "Success":
                 judge_data = judge_res.get("data", {})
                 verdict = str(judge_data.get("verdict", "")).strip().lower()
-
                 result["judge_verdict"] = verdict
                 result["judge_rationale"] = judge_data.get("judge_rationale", "")
                 if verdict == "fail":
@@ -670,8 +670,7 @@ def process_message_pipeline(
 
     # Always return a rationale string for UI consistency.
     rationale_raw = str(result.get("rationale", "")).strip()
-
-    if not rationale_raw:
+    if (not rationale_raw) or rationale_raw.lower() == "no rationale was returned by the model.":
         if genai_status == "Success":
             result["rationale"] = (
                 f"Model output summary: urgency={result.get('urgency_label')}, "
