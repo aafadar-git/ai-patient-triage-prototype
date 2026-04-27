@@ -298,6 +298,25 @@ def test_c10_urgent_without_red_flag():
     assert result["requires_clinician_review"] is True
     assert not result["draft_response"]
 
+def test_figurative_cant_breathe_not_escalated():
+    """Assert that 'I can't breathe without you' is NOT escalated."""
+    result = process_message_pipeline(
+        "I can't breathe without you",
+        inference_mode="Rules Only"
+    )
+    assert result["urgency_label"] != "emergency"
+    assert "red flag" not in (result.get("escalation_reason") or "").lower()
+
+def test_literal_cant_breathe_with_symptoms_escalated():
+    """Assert that 'I can't breathe and my chest feels tight' is escalated."""
+    result = process_message_pipeline(
+        "I can't breathe and my chest feels tight",
+        inference_mode="Rules Only"
+    )
+    assert result["requires_clinician_review"] is True
+    assert result["urgency_label"] in ("urgent", "emergency")
+    assert "breathe" in (result.get("escalation_reason") or "").lower()
+
 # ==========================================
 # TEST GROUP D: call_purdue_genai edge cases
 # ==========================================
