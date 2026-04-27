@@ -190,6 +190,9 @@ Now classify this patient message:
 
         raw_json = response.json()
         
+        if raw_json is None:
+            return {"status": "EmptyResponse", "error": "API returned explicit null/None top-level JSON."}
+
         # Normalize list responses
         if isinstance(raw_json, list):
             raw_json = {"choices": raw_json}
@@ -200,29 +203,37 @@ Now classify this patient message:
             type_name = type(raw_json).__name__
             snippet = str(raw_json)[:500]
             return {
-                "status": "InvalidAPIResponse", 
+                "status": "MalformedPayload", 
                 "error": f"API returned non-dictionary JSON array or primitive.\nType: {type_name}\nStatus: {status_code}\nContent-Type: {content_type}\nPreview: {snippet}"
             }
     except Exception as e:
-        status_code = getattr(response, "status_code", "Unknown") if 'response' in locals() else "Unknown"
-        raw_text = response.text[:200] if 'response' in locals() and hasattr(response, "text") else "Unknown"
-        return {"status": "InvalidAPIResponse", "error": f"API returned non-JSON body: {str(e)}\nStatus: {status_code}\nRaw Response: {raw_text}"}
+        status_code = getattr(response, "status_code", "Unknown") if 'response' in locals() and response is not None else "Unknown"
+        raw_text = response.text[:200] if 'response' in locals() and response is not None and hasattr(response, "text") else ""
+        
+        if not raw_text.strip():
+            return {"status": "EmptyResponse", "error": f"API returned empty or whitespace HTTP body.\nStatus: {status_code}"}
+            
+        return {"status": "MalformedPayload", "error": f"API returned non-JSON body: {str(e)}\nStatus: {status_code}\nRaw Response: {raw_text}"}
 
     try:
-        choices = raw_json.get("choices", [])
-        if not choices:
-            return {"status": "EmptyResponse", "error": f"Model returned no choices. Raw response: {raw_json}"}
+        choices = raw_json.get("choices")
+        if not isinstance(choices, list) or len(choices) == 0:
+            return {"status": "EmptyResponse", "error": f"Model returned missing or empty choices array. Raw response: {str(raw_json)[:200]}"}
 
-        message_obj = choices[0].get("message", {})
+        message_obj = choices[0].get("message")
+        if message_obj is None:
+            return {"status": "MalformedPayload", "error": "Choices array exists but is missing the 'message' object."}
         if not isinstance(message_obj, dict):
-            return {"status": "InvalidAPIResponse", "error": "Message object is not a dictionary."}
+            return {"status": "MalformedPayload", "error": "Message object is not a dictionary."}
 
-        out_text = message_obj.get("content", "")
-    except (AttributeError, KeyError, IndexError, TypeError) as e:
-        return {"status": "InvalidAPIResponse", "error": f"Model JSON payload shape mismatch. Error: {str(e)}"}
+        out_text = message_obj.get("content")
+        if out_text is None:
+            return {"status": "MalformedPayload", "error": "Message object is missing the 'content' field or it is null."}
+    except Exception as e:
+        return {"status": "MalformedPayload", "error": f"Model JSON payload shape mismatch. Error: {str(e)}"}
 
-    if not out_text or str(out_text).strip() == "":
-         return {"status": "EmptyResponse", "error": f"Model returned empty message content. Raw response: {raw_json}"}
+    if not isinstance(out_text, str) or out_text.strip() == "":
+         return {"status": "EmptyResponse", "error": f"Model returned empty message content. Raw response: {str(raw_json)[:200]}"}
 
     try:
         if "```json" in out_text:

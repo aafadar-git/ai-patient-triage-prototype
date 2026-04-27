@@ -400,3 +400,46 @@ def test_d3_invalid_urgency_label_value(mock_post):
     result = call_purdue_genai("Test")
     assert result["status"] == "InvalidResponse"
     assert "Invalid urgency label" in result["error"]
+
+# ==========================================
+# TEST GROUP E: Burst Degradation and Parsing Edge Cases
+# ==========================================
+
+@patch("logic.requests.post")
+def test_e1_repeated_calls_burst_degradation(mock_post):
+    """Assert that a sequence of requests degrades gracefully when one is malformed."""
+    # First 2 succeed, 3rd fails with missing content
+    valid_resp = {"choices": [{"message": {"content": json.dumps({
+        "urgency_label": "routine", "type_label": "admin", "route_label": "front desk",
+        "confidence": 0.90, "draft_response": "", "rationale": "OK"
+    })}}]}
+    
+    malformed_resp = {"choices": [{"message": {}}]} # Missing 'content'
+    
+    mock_responses = [
+        MagicMock(status_code=200, json=lambda: valid_resp),
+        MagicMock(status_code=200, json=lambda: valid_resp),
+        MagicMock(status_code=200, json=lambda: malformed_resp),
+    ]
+    mock_post.side_effect = mock_responses
+    
+    res1 = call_purdue_genai("Test 1")
+    res2 = call_purdue_genai("Test 2")
+    res3 = call_purdue_genai("Test 3")
+    
+    assert res1["status"] == "Success"
+    assert res2["status"] == "Success"
+    # 3rd request should hit the MalformedPayload catch and gracefully fallback
+    assert res3["status"] == "MalformedPayload"
+    assert "missing the 'content' field" in res3["error"]
+
+@patch("logic.requests.post")
+def test_e2_none_json_response(mock_post):
+    """Assert that a None JSON body is caught securely without crashing."""
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = None
+    mock_post.return_value = mock_resp
+    
+    result = call_purdue_genai("Test")
+    assert result["status"] == "EmptyResponse"
+    assert "explicit null/None" in result["error"]
