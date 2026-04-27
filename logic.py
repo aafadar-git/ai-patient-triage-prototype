@@ -37,10 +37,9 @@ Important anti-over-escalation rule:
 - Do NOT label lifestyle, wellness, diet, exercise, prevention, or general education questions as urgent/emergency unless there are clear acute red-flag symptoms.
 - Example: "How can I have a healthier diet?" should be routine.
 
-Invalid/non-clinical handling:
-If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke", "I'm dying 💀", "I'm dead 💀", "dying from laughter", "this is killing me lol"):
-If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke"):
-- Keep classification conservative.
+Invalid/non-clinical/figurative handling:
+If the message is nonsensical, joking, non-medical, clearly invalid, romantic, or uses figurative slang (e.g., "refill my diet coke", "I'm dying 💀", "I can't breathe without you", "dying from laughter", "this is killing me lol"):
+- Keep classification conservative (routine).
 - Lower confidence (<0.5).
 - Return empty draft_response.
 - Explain why in rationale.
@@ -109,7 +108,31 @@ Output:
   "rationale": "Valid medication refill request without urgent symptoms; routine medication workflow."
 }}
 
-Example E (invalid/non-clinical edge case):
+Example E (figurative/romantic language):
+Input: "I can't breathe without you near me lol"
+Output:
+{{
+  "urgency_label": "routine",
+  "type_label": "admin",
+  "route_label": "front desk",
+  "confidence": 0.35,
+  "draft_response": "",
+  "rationale": "Uses figurative/romantic language ('can't breathe without you') rather than describing a genuine medical respiratory emergency. Routine/low confidence appropriate."
+}}
+
+Example F (figurative slang):
+Input: "this workout is killing me I'm dying 💀"
+Output:
+{{
+  "urgency_label": "routine",
+  "type_label": "admin",
+  "route_label": "front desk",
+  "confidence": 0.40,
+  "draft_response": "",
+  "rationale": "Slang and exaggeration ('killing me', 'dying') with no true clinical symptoms. Routine/low confidence appropriate."
+}}
+
+Example G (invalid/non-clinical edge case):
 Input: "Please refill my diet coke prescription lol."
 Output:
 {{
@@ -705,6 +728,19 @@ def process_message_pipeline(
             result["rationale"] = "GenAI was not invoked for this request."
         else:
             result["rationale"] = "Rationale not available for this inference path."
+
+    # 3.5 Post-LLM Normalization Step
+    if is_obvious_nonclinical_figurative(message) and not escalation_reason:
+        # Figurative language with NO non-respiratory red flags present
+        # Normalize AI classifications down from emergency/urgent
+        if result.get("urgency_label") in ["urgent", "emergency"]:
+            result["urgency_label"] = "routine"
+            # Force confidence low to trigger manual review
+            result["confidence"] = min(float(result.get("confidence", 0.0)), 0.49)
+            result["rationale"] = (
+                f"{result.get('rationale', '')} [SYSTEM NORMALIZED: "
+                "Figurative/romantic language detected with no other clinical red flags.]"
+            ).strip()
 
     # Low confidence override rule
     CONFIDENCE_THRESHOLD = 0.80
