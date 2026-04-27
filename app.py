@@ -6,13 +6,14 @@ import importlib
 # Force local directory to the absolute front of sys.path to strictly prioritize the local module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import logic
+
+# Force Streamlit to ignore cached sys.modules memory and absolutely re-parse logic.py
+importlib.reload(logic)
+
 import pandas as pd
 import streamlit as st
 import datetime
-
-import logic
-# Force Streamlit to ignore cached sys.modules memory and absolutely re-parse logic.py
-importlib.reload(logic)
 
 # --- configuration & data ---
 st.set_page_config(page_title="AI Patient Triage Prototype", layout="wide")
@@ -38,6 +39,19 @@ st.title("Patient Portal Message Triage")
 # Layout
 with st.sidebar:
     inference_mode = st.radio("Inference Mode", ["Rules Only", "Purdue GenAI Assisted"])
+    use_llm_judge = st.checkbox(
+        "Enable LLM Judge Validation",
+        value=True,
+        help="Runs a second LLM pass to validate/correct classification, confidence, and draft response."
+    )
+    genai_temperature = st.slider(
+        "GenAI Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.05,
+        help="Higher values increase response variability. Use this to validate confidence and prompt behavior."
+    )
     st.divider()
     with st.expander("About this prototype", expanded=True):
         st.write("**The Problem:** Inbox overload leads to clinician burnout and risks missing urgent medical issues.")
@@ -46,7 +60,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Deployment Readiness", anchor=False)
-    
+
     # Check secrets securely, prioritizing os.environ
     api_key = os.environ.get("PURDUE_GENAI_API_KEY")
     if not api_key:
@@ -55,12 +69,12 @@ with st.sidebar:
                 api_key = st.secrets.get("PURDUE_GENAI_API_KEY")
         except Exception:
             api_key = None
-            
+
     if api_key:
         st.success("✅ **GenAI API Key:** Configured")
     else:
         st.error("❌ **GenAI API Key:** Missing")
-        
+
     model_name = os.environ.get("PURDUE_GENAI_MODEL")
     if not model_name:
         try:
@@ -68,12 +82,12 @@ with st.sidebar:
                 model_name = st.secrets.get("PURDUE_GENAI_MODEL")
         except Exception:
             model_name = None
-            
+
     if not model_name:
         model_name = "llama3.1:latest"
-        
+
     st.info(f"⚙️ **Model Target:** `{model_name}`")
-    
+
     st.divider()
     st.caption(f"**Debug Path:** `{getattr(logic, '__file__', 'Unknown')}`")
     try:
@@ -83,16 +97,15 @@ with st.sidebar:
 
 col1, col2 = st.columns([1, 1], gap="large")
 
-# Load data
 df_mock = load_mock_data()
 
 with col1:
     st.subheader("1. Select or Enter Message")
     input_method = st.radio("Input Method", ["Load from Mock Dataset", "Enter Custom Message"], horizontal=True)
-    
+
     selected_message = ""
     dataset_row = None
-    
+
     if input_method == "Load from Mock Dataset" and not df_mock.empty:
         # Let user pick a message
         options = df_mock.apply(lambda row: f"{row['message_id']}: {row['patient_message'][:40]}...", axis=1).tolist()
@@ -100,7 +113,7 @@ with col1:
         idx = options.index(selected_option)
         dataset_row = df_mock.iloc[idx].to_dict()
         selected_message = dataset_row["patient_message"]
-        
+
         st.text_area("Patient Message Content", value=selected_message, height=150, disabled=True)
     else:
         selected_message = st.text_area("Enter Patient Message", height=150, placeholder="e.g. Can I get a refill on my lisinopril?")
@@ -109,58 +122,100 @@ with col2:
     st.subheader("2. AI Analysis & Triage")
     if selected_message.strip():
         # RUN AI PIPELINE
-        result = logic.process_message_pipeline(selected_message, dataset_row=dataset_row, inference_mode=inference_mode)
-        
+        result = logic.process_message_pipeline(
+            selected_message,
+            dataset_row=dataset_row,
+            inference_mode=inference_mode,
+            genai_temperature=genai_temperature,
+            genai_api_key=api_key,
+            genai_model_name=model_name,
+            use_llm_judge=use_llm_judge
+        )
+
         # Display Badges
         c1, c2, c3 = st.columns(3)
         c1.metric("Predicted Urgency", result["urgency_label"].upper())
         c2.metric("Predicted Type", result["type_label"].title())
         c3.metric("Suggested Route", result["route_label"].title())
-        
+
         # Confidence Score
         conf_color = "green" if result["confidence"] >= 0.80 else "red"
         st.markdown(f"**Confidence Score:** :{conf_color}[**{result['confidence']:.2f}**]")
-        
+
         if result.get("genai_status") == "Success":
             st.caption("🤖 Model-assisted output via Purdue GenAI Studio")
-            with st.expander("AI Rationale", expanded=True):
-                st.write(result.get("rationale") or "No rationale was returned by the model.")
+            st.caption(f"Temperature Used: `{result.get('genai_temperature', 0.0):.2f}`")
+            with st.expander("Prompt Used for GenAI", expanded=False):
+                st.code(result.get("genai_prompt") or "Prompt not available.", language="text")
         elif inference_mode == "Purdue GenAI Assisted" and result.get("genai_status") not in ["Success", "None"]:
             st.warning("⚠️ **Purdue GenAI unavailable or failed; reverted to rules-only inference.**")
             with st.expander("Show Diagnostic Error", expanded=True):
                 st.error(f"**Status Code:** {result.get('genai_status')}\n\n**Details:** {result.get('genai_error')}")
-            
+
+        rationale_text = str(result.get("rationale") or "").strip()
+        if not rationale_text:
+            if inference_mode == "Rules Only":
+                rationale_text = (
+                    "Rules-only mode is active. This output comes from deterministic rules/stub logic, "
+                    "not a model-generated rationale."
+                )
+            elif result.get("genai_status") == "Success":
+                rationale_text = "Model call succeeded but returned no rationale text."
+            else:
+                rationale_text = (
+                    f"No model rationale available. GenAI status: {result.get('genai_status', 'Unknown')}."
+                )
+
+        with st.expander("AI Rationale", expanded=True):
+            st.write(rationale_text)
+
+        if inference_mode == "Purdue GenAI Assisted" and use_llm_judge:
+            with st.expander("LLM Judge Validation", expanded=False):
+                st.write(f"**Judge Status:** {result.get('judge_status', 'None')}")
+                st.write(f"**Judge Verdict:** {result.get('judge_verdict') or 'N/A'}")
+                st.write(f"**Judge Applied Corrections:** {result.get('judge_applied', False)}")
+                st.write(result.get("judge_rationale") or "No judge rationale available.")
+
         st.divider()
-        
+
         # Escalation / Drafting Panel
-        if result.get("escalation_reason"):
-            st.error(f"🚨 **ESCALATE TO CLINICIAN IMMEDIATELY**\n\n**Reason:** {result['escalation_reason']}")
+        if result.get("requires_clinician_review"):
+            st.error(f"🚨 **ESCALATE TO CLINICIAN IMMEDIATELY**\n\n**Reason:** {result.get('escalation_reason') or 'AI classified as high urgency'}")
+            st.info("ℹ️ Auto-draft is disabled for escalated or non-routine messages.")
+            draft = None
+        elif result.get("manual_review_required"):
+            st.warning(f"⚠️ **MANUAL REVIEW REQUIRED** — low confidence or ambiguous message\n\n**Reason:** {result.get('review_reason')}")
+            st.info("ℹ️ Auto-draft is disabled for low-confidence or non-routine messages.")
             draft = None
         else:
             st.success("✅ **Cleared for Auto-Drafting** (Routine issue, High Confidence)")
             if result.get("draft_response"):
                 draft = st.text_area("Generated Draft Response", value=result["draft_response"], height=120)
             else:
-                st.info("ℹ️ No auto-draft text was generated for this message.")
+                st.info(
+                    "ℹ️ No auto-draft text was generated. Drafts are only produced for routine, "
+                    "non-escalated, high-confidence messages."
+                )
                 draft = None
-        
+
         st.divider()
-        
+
         # Action Log buttons
         st.write("**Human-in-the-Loop Actions**")
-        
+
         with st.form("human_override_form"):
             st.caption("Review & Override Labels")
             oc1, oc2 = st.columns(2)
             o_urg = oc1.selectbox("Final Urgency", ["routine", "urgent", "emergency"], index=["routine", "urgent", "emergency"].index(result["urgency_label"]))
             o_route = oc2.selectbox("Final Route", ["nurse pool", "physician", "front desk"], index=["nurse pool", "physician", "front desk"].index(result["route_label"]))
-            
+
             c1, c2, c3, c4 = st.columns(4)
-            app_btn = c1.form_submit_button("Approve Draft", disabled=bool(result.get("escalation_reason")))
-            edit_btn = c2.form_submit_button("Edit Draft", disabled=bool(result.get("escalation_reason")))
+            disabled_draft = bool(result.get("requires_clinician_review") or result.get("manual_review_required"))
+            app_btn = c1.form_submit_button("Approve Draft", disabled=disabled_draft)
+            edit_btn = c2.form_submit_button("Edit Draft", disabled=disabled_draft)
             esc_btn = c3.form_submit_button("Escalate")
             rer_btn = c4.form_submit_button("Reroute")
-            
+
         def handle_action(action_name):
             log_entry = {
                 "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -171,6 +226,8 @@ with col2:
                 "Final Route": o_route,
                 "Confidence": result["confidence"],
                 "Escalation Reason": result.get("escalation_reason", "None"),
+                "Manual Review Required": result.get("manual_review_required", False),
+                "Review Reason": result.get("review_reason", "None"),
                 "Reviewer Action": action_name
             }
             st.session_state.review_log.append(log_entry)
@@ -183,7 +240,6 @@ with col2:
 
 st.divider()
 
-# --- Dashboard & Review Log Sections ---
 st.subheader("3. System Evaluation Dashboard & Audit Log")
 
 tab_queue, tab1, tab2, tab3 = st.tabs(["Reviewer Queues", "Review Log", "Dashboard Analytics", "Governance & Safety"])
@@ -192,31 +248,46 @@ with tab_queue:
     st.markdown("### Initial Inbox Queues")
     if not df_mock.empty:
         escalated_queue = []
+        manual_review_queue = []
         routine_queue = []
         admin_queue = []
-        
+
         for _, r in df_mock.iterrows():
-            r_eval = logic.process_message_pipeline(r['patient_message'], dataset_row=r.to_dict())
+            r_eval = logic.process_message_pipeline(
+                r['patient_message'],
+                dataset_row=r.to_dict(),
+                inference_mode=inference_mode,
+                genai_temperature=genai_temperature,
+                genai_api_key=api_key,
+                genai_model_name=model_name,
+                use_llm_judge=use_llm_judge
+            )
             item = {
                 "Message ID": r['message_id'],
                 "Patient Message": r['patient_message'],
                 "Predicted Urgency": r_eval['urgency_label'],
                 "Predicted Route": r_eval['route_label']
             }
-            if r_eval.get("escalation_reason"):
-                item["Escalation Reason"] = r_eval["escalation_reason"]
+            if r_eval.get("requires_clinician_review"):
+                item["Escalation Reason"] = r_eval.get("escalation_reason") or "AI classified as high urgency"
                 escalated_queue.append(item)
+            elif r_eval.get("manual_review_required"):
+                item["Review Reason"] = r_eval.get("review_reason")
+                manual_review_queue.append(item)
             elif r_eval["route_label"] == "front desk":
                 admin_queue.append(item)
             else:
                 routine_queue.append(item)
-                
+
         st.subheader("🚨 Escalated Review Queue", anchor=False)
         st.dataframe(pd.DataFrame(escalated_queue), use_container_width=True)
-        
+
+        st.subheader("⚠️ Manual Review Queue", anchor=False)
+        st.dataframe(pd.DataFrame(manual_review_queue), use_container_width=True)
+
         st.subheader("📝 Routine Draft Queue", anchor=False)
         st.dataframe(pd.DataFrame(routine_queue), use_container_width=True)
-        
+
         st.subheader("🏢 Admin / Front Desk Queue", anchor=False)
         st.dataframe(pd.DataFrame(admin_queue), use_container_width=True)
     else:
@@ -232,47 +303,59 @@ with tab1:
 with tab2:
     if not df_mock.empty:
         total_msgs = len(df_mock)
-        
+
         # Evaluate how many would be escalated
         # (Assuming the mock data contains the base info, apply our PIPELINE to it all)
         escalate_count = 0
+        manual_review_count = 0
         routine_draft_count = 0
-        
+
         # Evaluation Counters
         urgency_matches = 0
         type_matches = 0
-        
+
         for _, row in df_mock.iterrows():
             # Pipeline with dataset for demo tracking
-            res = logic.process_message_pipeline(row['patient_message'], dataset_row=row.to_dict())
-            if res.get("escalation_reason"):
+            res = logic.process_message_pipeline(
+                row['patient_message'],
+                dataset_row=row.to_dict(),
+                genai_temperature=genai_temperature
+            )
+            if res.get("requires_clinician_review"):
                 escalate_count += 1
+            elif res.get("manual_review_required"):
+                manual_review_count += 1
             elif res.get("urgency_label") == "routine" and res.get("confidence") >= 0.80:
                 routine_draft_count += 1
-            
+
             # Pure inference without dataset hints to test rule accuracy
-            res_pred = logic.process_message_pipeline(row['patient_message'], dataset_row=None)
+            res_pred = logic.process_message_pipeline(
+                row['patient_message'],
+                dataset_row=None,
+                genai_temperature=genai_temperature
+            )
             if res_pred["urgency_label"] == row["urgency_label"]:
                 urgency_matches += 1
             if res_pred["type_label"] == row["type_label"]:
                 type_matches += 1
-                
-        d1, d2, d3 = st.columns(3)
-        d1.metric("Total Messages Analyzed", total_msgs)
-        d2.metric("Escalated to Human", escalate_count, help="Due to red flags or low confidence")
-        d3.metric("Auto-Drafted (Routine)", routine_draft_count)
-        
+
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Total Analyzed", total_msgs)
+        d2.metric("Escalated", escalate_count, help="Due to red flags or AI high urgency")
+        d3.metric("Manual Review", manual_review_count, help="Due to low confidence or ambiguity")
+        d4.metric("Auto-Draft Eligible", routine_draft_count)
+
         st.divider()
         st.write("**Rules Engine Evaluation (Predicted vs Expected)**")
         e1, e2 = st.columns(2)
         e1.metric("Urgency Accuracy", f"{(urgency_matches / total_msgs) * 100:.0f}%", f"{urgency_matches}/{total_msgs} correct")
         e2.metric("Type Accuracy", f"{(type_matches / total_msgs) * 100:.0f}%", f"{type_matches}/{total_msgs} correct")
-        
+
         st.caption("These analytics reflect the current mock dataset processed against the rules engine.")
-        
+
         st.divider()
         st.write("**Offline Engine Evaluation**")
-        
+
         def resolve_dataset_path():
             paths = [
                 os.path.join(os.path.dirname(__file__), "data", "train_messages_v3_dynamic.csv"),
@@ -283,20 +366,29 @@ with tab2:
                 if os.path.exists(p):
                     return p
             return None
-            
+
         dataset_path = resolve_dataset_path()
-        
+
         if dataset_path:
             st.caption(f"Resolved dataset path: `{dataset_path}`")
         else:
             st.caption("Dynamic training dataset not found in expected locations.")
-            
+
         if st.button("Run Evaluation on Dynamic Training Set"):
             if dataset_path:
                 with st.spinner("Running Offline Evaluation Engines..."):
-                    eval_rules = logic.evaluate_offline_dataset(dataset_path, inference_mode="Rules Only")
-                    eval_genai = logic.evaluate_offline_dataset(dataset_path, inference_mode="Purdue GenAI Assisted", max_samples=30)
-                    
+                    eval_rules = logic.evaluate_offline_dataset(
+                        dataset_path, 
+                        inference_mode="Rules Only"
+                    )
+                    eval_genai = logic.evaluate_offline_dataset(
+                        dataset_path, 
+                        inference_mode="Purdue GenAI Assisted", 
+                        max_samples=30,
+                        api_key=api_key,
+                        model_name=model_name
+                    )
+
                 st.write("---")
                 c_rules, c_genai = st.columns(2)
                 with c_rules:
@@ -309,12 +401,12 @@ with tab2:
                         e3, e4 = st.columns(2)
                         e3.metric("Escalation Rate", f"{eval_rules['escalation_rate']*100:.1f}%")
                         e4.metric("Auto-Draft Rate", f"{eval_rules['autodraft_rate']*100:.1f}%")
-                        
+
                         ur = f"{eval_rules['urgent_recall']*100:.1f}%" if eval_rules["urgent_recall"] is not None else "N/A"
                         st.metric("Urgent Recall (FN count)", f"{ur} ({eval_rules['urgent_false_negatives']} FNs)")
                     else:
                         st.error("Rules Evaluation failed.")
-                        
+
                 with c_genai:
                     st.write("**Purdue GenAI Assisted (30 Random Sample limit)**")
                     if eval_genai and eval_genai.get("status") == "success":
@@ -325,14 +417,14 @@ with tab2:
                         e3, e4 = st.columns(2)
                         e3.metric("Escalation Rate", f"{eval_genai['escalation_rate']*100:.1f}%")
                         e4.metric("Auto-Draft Rate", f"{eval_genai['autodraft_rate']*100:.1f}%")
-                        
+
                         ur_gen = f"{eval_genai['urgent_recall']*100:.1f}%" if eval_genai["urgent_recall"] is not None else "N/A"
                         st.metric("Urgent Recall (FN count)", f"{ur_gen} ({eval_genai['urgent_false_negatives']} FNs)")
                     else:
                         st.warning("GenAI Evaluation skipped or failed gracefully.")
             else:
                 st.warning("Dynamic training dataset not found in expected locations.")
-                
+
     else:
         st.warning("Mock data not found.")
 

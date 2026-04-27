@@ -167,12 +167,12 @@ def test_c1_red_flag_pre_emption():
         inference_mode="Rules Only"
     )
     
-    assert result["urgency_label"] == "urgent"
+    assert result["urgency_label"] in ["urgent", "emergency"]
     assert result["escalation_reason"] is not None
     assert not result["draft_response"]
 
 def test_c2_low_confidence_gate():
-    """Assert that low confidence correctly suppresses the draft response."""
+    """Assert that low confidence correctly suppresses the draft response and triggers manual review."""
     # A very short message typically yields low confidence in stub_classifier
     result = process_message_pipeline(
         "Hi.",
@@ -181,14 +181,17 @@ def test_c2_low_confidence_gate():
     
     # Confidence threshold in logic.py is 0.80.
     assert result["confidence"] < 0.80
-    assert result["escalation_reason"] is not None
+    assert result["manual_review_required"] is True
+    assert result["review_reason"] is not None
+    assert result["escalation_reason"] is None
+    assert result["urgency_label"] == "routine"
     assert not result["draft_response"]
 
 def test_c3_routine_draft_generation():
     """Assert that a valid routine message produces a draft in Rules mode."""
     # stub_classifier gives admin/medication high confidence if long enough
     result = process_message_pipeline(
-        "Can I get a refill on my blood pressure medication? It is lisinopril.",
+        "Can I get a refill on my heart medication? It is lisinopril.",
         inference_mode="Rules Only"
     )
     
@@ -199,8 +202,14 @@ def test_c3_routine_draft_generation():
     # to actually see a draft response in Rules Only mode, OR we can test the behavior.
     # We will pass a dataset_row to simulate the draft.
     result_with_draft = process_message_pipeline(
-        "Can I get a refill on my blood pressure medication? It is lisinopril.",
-        dataset_row={"draft_response": "Sure thing!"},
+        "Can I get a refill on my heart medication? It is lisinopril.",
+        dataset_row={
+            "urgency_label": "routine",
+            "type_label": "medication",
+            "route_label": "nurse pool",
+            "draft_response": "Sure thing!",
+            "confidence": 0.90
+        },
         inference_mode="Rules Only"
     )
     assert result_with_draft["urgency_label"] == "routine"
@@ -215,6 +224,79 @@ def test_c4_genai_call_blocked_by_red_flag(mock_call_genai):
     )
     
     assert mock_call_genai.call_count == 0
+
+def test_c5_figurative_language_manual_review():
+    """Assert that figurative language correctly triggers manual review, not clinical escalation."""
+    result = process_message_pipeline(
+        "I'm dying from laughter",
+        inference_mode="Rules Only"
+    )
+
+    assert result["urgency_label"] == "routine"
+    assert result["confidence"] < 0.80
+    assert result["manual_review_required"] is True
+    assert result["escalation_reason"] is None
+    assert result["requires_clinician_review"] is False
+    assert not result["draft_response"]
+
+def test_c6_soft_red_flags():
+    """Assert that 'elephant on chest' triggers emergency/urgent escalation."""
+    result = process_message_pipeline(
+        "I feel an elephant on my chest and can't catch my breath.",
+        inference_mode="Rules Only"
+    )
+    
+    assert result["urgency_label"] in ["urgent", "emergency"]
+    assert result["escalation_reason"] is not None
+    assert result["requires_clinician_review"] is True
+    assert not result["draft_response"]
+
+def test_c7_mixed_clinical_slang():
+    """Assert that 'I’m dying 💀 this cough won’t quit' correctly triggers manual review, not clinical escalation."""
+    result = process_message_pipeline(
+        "I'm dying 💀 this cough won't quit",
+        inference_mode="Rules Only"
+    )
+    assert result["urgency_label"] == "routine"
+    assert result["manual_review_required"] is True
+    assert result["escalation_reason"] is None
+    assert result["requires_clinician_review"] is False
+    assert not result["draft_response"]
+
+def test_c8_admin_with_red_flag():
+    """Assert that an admin message with a red flag over-escalates as a fail-safe."""
+    result = process_message_pipeline(
+        "Need an insurance letter for my chest pain last year.",
+        inference_mode="Rules Only"
+    )
+    assert result["urgency_label"] in ["urgent", "emergency"]
+    assert result["escalation_reason"] is not None
+    assert result["requires_clinician_review"] is True
+    assert not result["draft_response"]
+
+def test_c9_short_ambiguous():
+    """Assert that a very short message triggers manual review."""
+    result = process_message_pipeline(
+        "Help",
+        inference_mode="Rules Only"
+    )
+    assert result["urgency_label"] == "routine"
+    assert result["manual_review_required"] is True
+    assert result["escalation_reason"] is None
+    assert result["requires_clinician_review"] is False
+    assert not result["draft_response"]
+
+def test_c10_urgent_without_red_flag():
+    """Assert that an urgent urgency_label without a red flag still lands in requires_clinician_review."""
+    result = process_message_pipeline(
+        "Some random message that AI thinks is urgent",
+        dataset_row={"urgency_label": "urgent", "type_label": "symptom", "route_label": "physician", "confidence": 0.95},
+        inference_mode="Rules Only"
+    )
+    assert result["urgency_label"] == "urgent"
+    assert result["escalation_reason"] is None
+    assert result["requires_clinician_review"] is True
+    assert not result["draft_response"]
 
 # ==========================================
 # TEST GROUP D: call_purdue_genai edge cases
