@@ -18,13 +18,13 @@ def call_purdue_genai(
         api_key = os.environ.get("PURDUE_GENAI_API_KEY")
     if not api_key:
         return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
-        
+
     url = "https://genai.rcac.purdue.edu/api/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    
+
     prompt = f"""
 You are a patient portal triage assistant. Classify ONE incoming patient message conservatively and consistently.
 
@@ -38,6 +38,7 @@ Important anti-over-escalation rule:
 - Example: "How can I have a healthier diet?" should be routine.
 
 Invalid/non-clinical handling:
+If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke", "I'm dying 💀", "I'm dead 💀", "dying from laughter", "this is killing me lol"):
 If the message is nonsensical, joking, non-medical, clearly invalid, or inappropriate/non-clinical (e.g., "refill my diet coke"):
 - Keep classification conservative.
 - Lower confidence (<0.5).
@@ -173,61 +174,68 @@ Now classify this patient message:
         status_code = getattr(response, "status_code", "Unknown") if 'response' in locals() else "Unknown"
         raw_text = response.text[:200] if 'response' in locals() and hasattr(response, "text") else "Unknown"
         return {"status": "InvalidAPIResponse", "error": f"API returned non-JSON body: {str(e)}\nStatus: {status_code}\nRaw Response: {raw_text}"}
-        
+
     try:
         choices = raw_json.get("choices", [])
         if not choices:
             return {"status": "EmptyResponse", "error": f"Model returned no choices. Raw response: {raw_json}"}
-            
+
         message_obj = choices[0].get("message", {})
         if not isinstance(message_obj, dict):
             return {"status": "InvalidAPIResponse", "error": "Message object is not a dictionary."}
-            
+
         out_text = message_obj.get("content", "")
     except (AttributeError, KeyError, IndexError, TypeError) as e:
         return {"status": "InvalidAPIResponse", "error": f"Model JSON payload shape mismatch. Error: {str(e)}"}
-    
+
     if not out_text or str(out_text).strip() == "":
          return {"status": "EmptyResponse", "error": f"Model returned empty message content. Raw response: {raw_json}"}
-        
+
     try:
         if "```json" in out_text:
             out_text = out_text.split("```json")[1].split("```")[0]
         elif "```" in out_text:
             out_text = out_text.split("```")[1].split("```")[0]
-            
+
         out_text = out_text.strip()
         if not out_text:
              return {"status": "EmptyResponse", "error": "Model content became empty after removing markdown fences."}
-             
+
         parsed = json.loads(out_text)
     except Exception as e:
         return {"status": "ParseError", "error": f"Model returned invalid JSON format: {str(e)}\n\nExtracted Text: {out_text}"}
-        
+
+    if not isinstance(parsed, dict):
+        return {"status": "ParseError", "error": "Model returned valid JSON, but it is not a dictionary object."}
+
     required_keys = ["urgency_label", "type_label", "route_label", "confidence", "draft_response", "rationale"]
-    
+
     if "rationale" not in parsed or not str(parsed.get("rationale", "")).strip():
         parsed["rationale"] = "No rationale was returned by the model."
     if "draft_response" not in parsed or parsed["draft_response"] is None:
         parsed["draft_response"] = ""
     if "confidence" not in parsed or parsed["confidence"] is None:
         parsed["confidence"] = 0.5
-        
+
+    # urgency_label, type_label, and route_label intentionally have NO fallback.
+    # If the model omits them, the pipeline hard-fails with InvalidResponse.
+    # Only non-routing cosmetic fields (rationale, draft_response, confidence)
+    # receive silent normalization because they do not affect clinical routing safety.
     missing = [k for k in required_keys if k not in parsed]
     if missing:
         return {"status": "InvalidResponse", "error": f"Missing required key(s): {', '.join(missing)}\n\nParsed JSON: {json.dumps(parsed)}"}
-        
+
     valid_urgencies = ["emergency", "urgent", "routine"]
     valid_types = ["symptom", "medication", "admin", "follow-up"]
     valid_routes = ["nurse pool", "physician", "front desk"]
-    
+
     if parsed.get("urgency_label") not in valid_urgencies: 
         return {"status": "InvalidResponse", "error": f"Invalid urgency label returned: {parsed.get('urgency_label')}"}
     if parsed.get("type_label") not in valid_types: 
         return {"status": "InvalidResponse", "error": f"Invalid type label returned: {parsed.get('type_label')}"}
     if parsed.get("route_label") not in valid_routes: 
         return {"status": "InvalidResponse", "error": f"Invalid route label returned: {parsed.get('route_label')}"}
-    
+
     return {
         "status": "Success",
         "data": {
@@ -330,6 +338,7 @@ Rules:
             out_text = out_text.split("```json")[1].split("```")[0]
         elif "```" in out_text:
             out_text = out_text.split("```")[1].split("```")[0]
+
         parsed = json.loads(out_text.strip())
     except Exception as e:
         return {"status": "ParseError", "error": f"Judge parse error: {str(e)}"}
@@ -404,17 +413,30 @@ def local_fallback_judge(message: str, candidate_output: dict) -> dict:
         "corrected_draft_response": str(corrected.get("draft_response", "") or ""),
         "judge_rationale": " | ".join(reasons) if reasons else "Local fallback judge found no consistency issues."
     }
+
 RED_FLAGS = [
     "chest pain",
     "shortness of breath",
-    "suicidal thoughts",
     "severe bleeding",
     "fainting",
     "fainted",
     "one-sided weakness",
     "allergic reaction",
     "high fever in infant",
-    "suicidal"
+    # Soft cardiopulmonary
+    "chest tightness",
+    "chest pressure",
+    "elephant on chest",
+    "hard to breathe",
+    "can't catch my breath",
+    "can't breathe",
+    # Suicidality bucket
+    "suicidal",
+    "suicidal thoughts",
+    "hurt myself",
+    "want to die",
+    "wish i wouldn't wake up",
+    "end it all"
 ]
 
 def safety_check(message: str) -> str | None:
@@ -427,7 +449,7 @@ def safety_check(message: str) -> str | None:
     for flag in RED_FLAGS:
         if re.search(r'\b' + re.escape(flag) + r'\b', message_lower):
             flags_found.append(flag)
-    
+
     if flags_found:
         return f"Red flag detected: {', '.join(flags_found)}"
     return None
@@ -438,7 +460,21 @@ def stub_classifier(message: str):
     Uses deterministic rules instead of random fallbacks.
     """
     msg_l = message.lower()
-    
+
+    # Pre-check for figurative or clearly non-clinical
+    figurative_phrases = [
+        "dying from laughter", "dying 💀", "dead 💀", "diet coke", 
+        "can't breathe laughing", "lol", "lmao", "joke",
+        "killing me", "laughing"
+    ]
+    if any(phrase in msg_l for phrase in figurative_phrases):
+        return {
+            "urgency_label": "routine",
+            "type_label": "admin",
+            "route_label": "front desk",
+            "confidence": 0.25
+        }
+
     # 1. Determine Urgency and Type
     if any(word in msg_l for word in ["blood", "pain", "hurt", "dying", "faint", "weakness", "fever", "allergic", "suicide", "suicidal"]):
         urgency = "emergency"
@@ -459,7 +495,7 @@ def stub_classifier(message: str):
         # Default fallback
         urgency = "routine"
         msg_type = "symptom"
-        
+
     # 2. Determine Route based on explicit rules
     if msg_type == "admin":
         route = "front desk"
@@ -476,7 +512,7 @@ def stub_classifier(message: str):
         base_conf += 0.15
     if urgency == "emergency":
         base_conf += 0.10
-    
+
     confidence = round(min(0.99, max(0.50, base_conf)), 2)
 
     return {
@@ -501,10 +537,12 @@ def process_message_pipeline(
     Otherwise, it runs the stub classifier.
     """
     result = {}
-    
+
     # 1. Safety / Rules Step
     escalation_reason = safety_check(message)
-    
+    manual_review_required = False
+    review_reason = None
+
     genai_status = "None"
     res_genai = None
     genai_draft = ""
@@ -528,9 +566,9 @@ def process_message_pipeline(
         else:
             genai_status = try_res["status"]
             result["genai_error"] = try_res.get("error", "Unknown API error.")
-            
+
     result["genai_status"] = genai_status
-            
+
     if genai_status == "Success":
         result["urgency_label"] = res_genai["urgency_label"]
         result["type_label"] = res_genai["type_label"]
@@ -650,18 +688,22 @@ def process_message_pipeline(
     # Low confidence override rule
     CONFIDENCE_THRESHOLD = 0.80
     if result["confidence"] < CONFIDENCE_THRESHOLD:
-        if not escalation_reason:
-            escalation_reason = f"Low confidence score ({result['confidence']:.2f} < {CONFIDENCE_THRESHOLD})"
+        manual_review_required = True
+        if not review_reason:
+            review_reason = f"Low confidence score ({result['confidence']:.2f} < {CONFIDENCE_THRESHOLD})"
 
-    # Update urgency if escalated via rules
+    # Update urgency if escalated via clinical safety rules
     if escalation_reason and result["urgency_label"] == "routine":
          result["urgency_label"] = "urgent"
 
     result["escalation_reason"] = escalation_reason
+    result["manual_review_required"] = manual_review_required
+    result["review_reason"] = review_reason
+    result["requires_clinician_review"] = bool(escalation_reason) or result["urgency_label"] in ["urgent", "emergency"]
 
     # 4. Drafting Step
     # Draft is ONLY generated for routine, non-escalated, high-confidence cases
-    if result["urgency_label"] == "routine" and not escalation_reason:
+    if result["urgency_label"] == "routine" and not result["requires_clinician_review"] and not manual_review_required:
         if genai_status == "Success" and genai_draft.strip() != "":
             result["draft_response"] = genai_draft
         elif dataset_row is not None and pd.notna(dataset_row.get("draft_response")) and dataset_row.get(
@@ -671,10 +713,14 @@ def process_message_pipeline(
             result["draft_response"] = None
     else:
         result["draft_response"] = None
-        
+
+    # Hard post-processing guard to clear draft_response if urgency is urgent/emergency or manual_review_required
+    if result["requires_clinician_review"] or result["manual_review_required"]:
+        result["draft_response"] = None
+
     return result
 
-def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", max_samples: int = None):
+def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", max_samples: int = None, api_key: str = None, model_name: str = None):
     """
     Helper function to perform offline validation of the triage engine on a large dataset.
     This bypasses the Streamlit UI and tests the raw logic performance.
@@ -682,9 +728,9 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
     import os
     if not os.path.exists(csv_path):
         return {"status": "error", "message": f"Dataset {csv_path} not found."}
-        
+
     df = pd.read_csv(csv_path)
-    
+
     # Normalize schema if new format is provided
     rename_map = {
         "Patient_Message": "patient_message",
@@ -693,16 +739,16 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
         "Draft_Response": "draft_response"
     }
     df.rename(columns=rename_map, inplace=True)
-    
+
     required_cols = ["patient_message", "urgency_label", "type_label"]
     missing = [c for c in required_cols if c not in df.columns]
-    
+
     if missing:
         return {"status": "error", "message": f"Missing required columns in dataset: {missing}"}
-        
+
     if max_samples is not None and len(df) > max_samples:
         df = df.sample(n=max_samples, random_state=42)
-        
+
     urgency_matches = 0
     type_matches = 0
     escalations = 0
@@ -711,23 +757,32 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
     urgent_false_negatives = 0
     total_urgent_expected = 0
     genai_fallbacks = 0
-    total = len(df)
-    
+
+    successful_rows = 0
+
     for _, row in df.iterrows():
         try:
-            res_pred = process_message_pipeline(row['patient_message'], dataset_row=None, inference_mode=inference_mode)
+            res_pred = process_message_pipeline(
+                row['patient_message'], 
+                dataset_row=None, 
+                inference_mode=inference_mode,
+                genai_api_key=api_key,
+                genai_model_name=model_name
+            )
         except Exception as e:
-            # Safe catch to ensure one row failure does not crash offline evaluation
+            print(f"[evaluate_offline_dataset] Row failed: {type(e).__name__}: {e}")
             continue
-            
+
+        successful_rows += 1
+
         if inference_mode == "Purdue GenAI Assisted" and res_pred.get("genai_status") not in ["Success", "None"]:
             genai_fallbacks += 1
-            
+
         if res_pred["urgency_label"] == row["urgency_label"]:
             urgency_matches += 1
         if res_pred["type_label"] == row["type_label"]:
             type_matches += 1
-            
+
         is_expected_urgent = row["urgency_label"] in ["urgent", "emergency"]
         if is_expected_urgent:
             total_urgent_expected += 1
@@ -735,23 +790,26 @@ def evaluate_offline_dataset(csv_path: str, inference_mode: str = "Rules Only", 
                 urgent_true_positives += 1
             elif res_pred["urgency_label"] == "routine":
                 urgent_false_negatives += 1
-            
+
         if res_pred.get("escalation_reason"):
             escalations += 1
         elif res_pred.get("urgency_label") == "routine" and res_pred.get("confidence") >= 0.80:
             autodrafts += 1
-            
+
+    if successful_rows == 0:
+        return {"status": "error", "message": "All rows failed processing."}
+
     urgent_recall = urgent_true_positives / total_urgent_expected if total_urgent_expected > 0 else None
-            
+
     return {
         "status": "success",
-        "urgency_acc": urgency_matches / total,
-        "type_acc": type_matches / total,
-        "escalation_rate": escalations / total,
-        "autodraft_rate": autodrafts / total,
+        "urgency_acc": urgency_matches / successful_rows,
+        "type_acc": type_matches / successful_rows,
+        "escalation_rate": escalations / successful_rows,
+        "autodraft_rate": autodrafts / successful_rows,
         "urgent_recall": urgent_recall,
         "genai_fallbacks": genai_fallbacks,
         "urgent_false_negatives": urgent_false_negatives,
         "total_urgent_expected": total_urgent_expected,
-        "total_messages": total
+        "total_messages": successful_rows
     }
