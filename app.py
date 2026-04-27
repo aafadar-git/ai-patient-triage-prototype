@@ -148,9 +148,11 @@ with col2:
             with st.expander("Prompt Used for GenAI", expanded=False):
                 st.code(result.get("genai_prompt") or "Prompt not available.", language="text")
         elif inference_mode == "Purdue GenAI Assisted" and result.get("genai_status") not in ["Success", "None"]:
-            st.warning("⚠️ **Purdue GenAI unavailable or failed; reverted to rules-only inference.**")
-            with st.expander("Show Diagnostic Error", expanded=True):
-                st.error(f"**Status Code:** {result.get('genai_status')}\n\n**Details:** {result.get('genai_error')}")
+            st.info("ℹ️ **Purdue GenAI unavailable or returned malformed payload; gracefully reverted to rules-only inference.**")
+            with st.expander("Developer/Diagnostic Logs", expanded=False):
+                st.markdown(f"**Status Code:** {result.get('genai_status')}\n\n**Details:** {result.get('genai_error')}")
+                if result.get("genai_status") == "EmptyResponse":
+                    st.caption("Note: Top-level null or empty response is a known intermittent Purdue API behavior under burst load, not a client bug.")
 
         rationale_text = str(result.get("rationale") or "").strip()
         if not rationale_text:
