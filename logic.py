@@ -6,26 +6,13 @@ import json
 import requests
 import time
 
-def call_purdue_genai(
-    message: str,
-    temperature: float = 0.0,
-    api_key: str | None = None,
-    model_name: str | None = None,
-    request_timeout_seconds: int = 60,
-    max_retries: int = 3
-):
-    if not api_key:
-        api_key = os.environ.get("PURDUE_GENAI_API_KEY")
-    if not api_key:
-        return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
+try:
+    import openai
+except ImportError:
+    openai = None
 
-    url = "https://genai.rcac.purdue.edu/api/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    prompt = f"""
+def _get_triage_prompt(message: str) -> str:
+    return f"""
 You are a patient portal triage assistant. Classify ONE incoming patient message conservatively and consistently.
 
 Core triage policy:
@@ -147,6 +134,28 @@ Output:
 Now classify this patient message:
 {message}
 """
+
+def call_purdue_genai(
+    message: str,
+    temperature: float = 0.0,
+    api_key: str | None = None,
+    model_name: str | None = None,
+    request_timeout_seconds: int = 60,
+    max_retries: int = 3
+):
+    if not api_key:
+        api_key = os.environ.get("PURDUE_GENAI_API_KEY")
+    if not api_key:
+        return {"status": "MissingKey", "error": "PURDUE_GENAI_API_KEY environment variable is not set."}
+
+    url = "https://genai.rcac.purdue.edu/api/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    prompt = _get_triage_prompt(message)
+
     try:
         if not model_name:
             model_name = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
@@ -265,6 +274,117 @@ Now classify this patient message:
     # If the model omits them, the pipeline hard-fails with InvalidResponse.
     # Only non-routing cosmetic fields (rationale, draft_response, confidence)
     # receive silent normalization because they do not affect clinical routing safety.
+    missing = [k for k in required_keys if k not in parsed]
+    if missing:
+        return {"status": "InvalidResponse", "error": f"Missing required key(s): {', '.join(missing)}\n\nParsed JSON: {json.dumps(parsed)}"}
+
+    valid_urgencies = ["emergency", "urgent", "routine"]
+    valid_types = ["symptom", "medication", "admin", "follow-up"]
+    valid_routes = ["nurse pool", "physician", "front desk"]
+
+    if parsed.get("urgency_label") not in valid_urgencies: 
+        return {"status": "InvalidResponse", "error": f"Invalid urgency label returned: {parsed.get('urgency_label')}"}
+    if parsed.get("type_label") not in valid_types: 
+        return {"status": "InvalidResponse", "error": f"Invalid type label returned: {parsed.get('type_label')}"}
+    if parsed.get("route_label") not in valid_routes: 
+        return {"status": "InvalidResponse", "error": f"Invalid route label returned: {parsed.get('route_label')}"}
+
+    return {
+        "status": "Success",
+        "data": {
+            "urgency_label": parsed["urgency_label"],
+            "type_label": parsed["type_label"],
+            "route_label": parsed["route_label"],
+            "confidence": float(parsed["confidence"]),
+            "draft_response": parsed["draft_response"],
+            "rationale": parsed["rationale"],
+            "prompt": prompt.strip(),
+            "temperature": float(temperature)
+        }
+    }
+
+def call_local_genai(
+    message: str,
+    temperature: float = 0.0,
+    api_key: str | None = None,
+    model_name: str | None = None,
+    request_timeout_seconds: int = 60,
+    max_retries: int = 3
+):
+    if openai is None:
+        return {"status": "APIError", "error": "openai Python package is not installed."}
+
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    if not api_key:
+        api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+    if not model_name:
+        model_name = os.environ.get("LOCAL_GENAI_MODEL_NAME", "llama3.1")
+
+    prompt = _get_triage_prompt(message)
+    
+    try:
+        client = openai.OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=request_timeout_seconds,
+            max_retries=max_retries
+        )
+    except Exception as e:
+        return {"status": "APIError", "error": f"Failed configuring OpenAI client: {str(e)}"}
+        
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=float(temperature)
+        )
+    except openai.APIConnectionError as e:
+        return {"status": "APIError", "error": f"Local API connection error: {str(e)}"}
+    except openai.APIStatusError as e:
+        return {"status": "APIError", "error": f"Local API status error: {e.status_code} - {e.response.text}"}
+    except Exception as e:
+        return {"status": "APIError", "error": f"Local API error: {str(e)}"}
+        
+    if not response.choices or len(response.choices) == 0:
+        return {"status": "EmptyResponse", "error": "Model returned missing or empty choices array."}
+        
+    message_obj = response.choices[0].message
+    if message_obj is None:
+        return {"status": "MalformedPayload", "error": "Choices array exists but is missing the 'message' object."}
+        
+    out_text = message_obj.content
+    if out_text is None:
+        return {"status": "MalformedPayload", "error": "Message object is missing the 'content' field or it is null."}
+        
+    if not isinstance(out_text, str) or out_text.strip() == "":
+         return {"status": "EmptyResponse", "error": "Model returned empty message content."}
+
+    try:
+        if "```json" in out_text:
+            out_text = out_text.split("```json")[1].split("```")[0]
+        elif "```" in out_text:
+            out_text = out_text.split("```")[1].split("```")[0]
+
+        out_text = out_text.strip()
+        if not out_text:
+             return {"status": "EmptyResponse", "error": "Model content became empty after removing markdown fences."}
+
+        parsed = json.loads(out_text)
+    except Exception as e:
+        return {"status": "ParseError", "error": f"Model returned invalid JSON format: {str(e)}\n\nExtracted Text: {out_text}"}
+
+    if not isinstance(parsed, dict):
+        return {"status": "ParseError", "error": "Model returned valid JSON, but it is not a dictionary object."}
+
+    required_keys = ["urgency_label", "type_label", "route_label", "confidence", "draft_response", "rationale"]
+
+    if "rationale" not in parsed or not str(parsed.get("rationale", "")).strip():
+        parsed["rationale"] = "No rationale was returned by the model."
+    if "draft_response" not in parsed or parsed["draft_response"] is None:
+        parsed["draft_response"] = ""
+    if "confidence" not in parsed or parsed["confidence"] is None:
+        parsed["confidence"] = 0.5
+
     missing = [k for k in required_keys if k not in parsed]
     if missing:
         return {"status": "InvalidResponse", "error": f"Missing required key(s): {', '.join(missing)}\n\nParsed JSON: {json.dumps(parsed)}"}
@@ -619,12 +739,23 @@ def process_message_pipeline(
     result["judge_applied"] = False
 
     if inference_mode == "Purdue GenAI Assisted" and not escalation_reason:
-        try_res = call_purdue_genai(
-            message,
-            temperature=genai_temperature,
-            api_key=genai_api_key,
-            model_name=genai_model_name
-        )
+        backend = os.environ.get("GENAI_BACKEND", "purdue").lower()
+        
+        if backend == "local":
+            try_res = call_local_genai(
+                message,
+                temperature=genai_temperature,
+                api_key=genai_api_key,
+                model_name=genai_model_name
+            )
+        else:
+            try_res = call_purdue_genai(
+                message,
+                temperature=genai_temperature,
+                api_key=genai_api_key,
+                model_name=genai_model_name
+            )
+            
         if try_res["status"] == "Success":
             res_genai = try_res["data"]
             genai_status = "Success"

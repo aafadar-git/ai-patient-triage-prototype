@@ -2,12 +2,14 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 import requests
+import os
 
 from logic import (
     call_purdue_genai,
     call_purdue_genai_judge,
     local_fallback_judge,
-    process_message_pipeline
+    process_message_pipeline,
+    call_local_genai
 )
 
 # ==========================================
@@ -443,3 +445,55 @@ def test_e2_none_json_response(mock_post):
     result = call_purdue_genai("Test")
     assert result["status"] == "EmptyResponse"
     assert "explicit null/None" in result["error"]
+
+# ==========================================
+# TEST GROUP F: Local GenAI Backend
+# ==========================================
+
+@patch("logic.openai.OpenAI")
+def test_f1_local_genai_success(mock_openai):
+    """Assert that call_local_genai parses a successful local model response correctly."""
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    
+    # Mock a successful response
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "urgency_label": "routine",
+        "type_label": "medication",
+        "route_label": "nurse pool",
+        "confidence": 0.99,
+        "draft_response": "Local response",
+        "rationale": "Local rationale"
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+    
+    mock_client.chat.completions.create.return_value = mock_response
+    
+    with patch.dict(os.environ, {"LOCAL_GENAI_MODEL_NAME": "test-model"}):
+        result = call_local_genai("Test message")
+        
+    assert result["status"] == "Success"
+    assert result["data"]["urgency_label"] == "routine"
+    assert result["data"]["draft_response"] == "Local response"
+
+@patch("logic.openai.OpenAI")
+def test_f2_local_genai_error(mock_openai):
+    """Assert that call_local_genai safely degrades on API status error."""
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    
+    import openai
+    # Mock an APIStatusError
+    error_response = MagicMock()
+    error_response.text = "Model not found"
+    mock_client.chat.completions.create.side_effect = openai.APIStatusError(
+        "Error", response=error_response, body=None
+    )
+    
+    result = call_local_genai("Test message")
+    assert result["status"] == "APIError"
+    assert "Local API status error" in result["error"]
